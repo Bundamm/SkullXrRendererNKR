@@ -356,6 +356,30 @@ namespace SkullXrRendererNKR.App
 
         [SerializeField, Range(-1f, 1f)] private float clipPlaneOffset = 0f;
 
+        /// <summary>Nachylenie płaszczyzny względem osi, w stopniach — pozwala ustawić dowolny kąt.</summary>
+        public float ClipPlanePitch
+        {
+            get => dicomData != null ? dicomData.ClipPlanePitch : 0f;
+            set
+            {
+                if (dicomData == null || Mathf.Approximately(dicomData.ClipPlanePitch, value)) return;
+                dicomData.ClipPlanePitch = value;
+                OnRenderSettingsChanged?.Invoke();
+            }
+        }
+
+        /// <summary>Obrót płaszczyzny wokół osi, w stopniach.</summary>
+        public float ClipPlaneYaw
+        {
+            get => dicomData != null ? dicomData.ClipPlaneYaw : 0f;
+            set
+            {
+                if (dicomData == null || Mathf.Approximately(dicomData.ClipPlaneYaw, value)) return;
+                dicomData.ClipPlaneYaw = value;
+                OnRenderSettingsChanged?.Invoke();
+            }
+        }
+
         /// <summary>Poziom faktycznie użyty — dla Auto rozwiązany po klasie sprzętu.</summary>
         public LoadDicomData.RaymarchQuality ResolvedRaymarchQuality =>
             dicomData != null ? dicomData.ResolvedRaymarchQuality : LoadDicomData.RaymarchQuality.High;

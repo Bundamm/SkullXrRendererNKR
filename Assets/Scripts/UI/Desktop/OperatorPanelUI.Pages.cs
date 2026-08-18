@@ -56,7 +56,7 @@ namespace SkullXrRendererNKR.UI.Desktop
         private DesktopUIFactory.SliderControl _windowCenter, _windowWidth, _surfaceThreshold;
         private DesktopUIFactory.SliderControl _visibleMaterialThreshold, _hueLow, _hueHigh;
         private DesktopUIFactory.SegmentedControl _qualitySelector, _clipAxisSelector;
-        private DesktopUIFactory.SliderControl _clipOffset;
+        private DesktopUIFactory.SliderControl _clipOffset, _clipPitch, _clipYaw;
         private Toggle _clipEnabledToggle;
         private Toggle _emptySkipToggle;
 
@@ -257,8 +257,20 @@ namespace SkullXrRendererNKR.UI.Desktop
             _clipOffset = DesktopUIFactory.CreateSlider(page, "Położenie", -1f, 1f,
                 session.ClipPlaneOffset, v => Apply(() => session.ClipPlaneOffset = v), "0.00");
 
-            DesktopUIFactory.CreateButton(page, "Wyśrodkuj przekrój",
-                                          () => Apply(() => session.ClipPlaneOffset = 0f),
+            // Oś to punkt wyjścia; te dwa kąty pozwalają ustawić dowolne nachylenie bez chwytania
+            // uchwytu — na komputerze to jedyna droga, bo chwytanie działa wyłącznie dłonią w XR.
+            _clipPitch = DesktopUIFactory.CreateSlider(page, "Nachylenie", -90f, 90f,
+                session.ClipPlanePitch, v => Apply(() => session.ClipPlanePitch = v), "0", "°");
+            _clipYaw = DesktopUIFactory.CreateSlider(page, "Obrót", -180f, 180f,
+                session.ClipPlaneYaw, v => Apply(() => session.ClipPlaneYaw = v), "0", "°");
+
+            DesktopUIFactory.CreateButton(page, "Wyśrodkuj i wyprostuj",
+                                          () => Apply(() =>
+                                          {
+                                              session.ClipPlaneOffset = 0f;
+                                              session.ClipPlanePitch = 0f;
+                                              session.ClipPlaneYaw = 0f;
+                                          }),
                                           DesktopUIFactory.Palette.PanelAlt, 28f);
 
             DesktopUIFactory.CreateSeparator(page);
@@ -313,6 +325,8 @@ namespace SkullXrRendererNKR.UI.Desktop
             if (_clipEnabledToggle != null) _clipEnabledToggle.SetIsOnWithoutNotify(session.ClipPlaneEnabled);
             _clipAxisSelector?.SetIndexWithoutNotify(session.ClipPlaneAxis);
             _clipOffset?.SetValueWithoutNotify(session.ClipPlaneOffset);
+            _clipPitch?.SetValueWithoutNotify(session.ClipPlanePitch);
+            _clipYaw?.SetValueWithoutNotify(session.ClipPlaneYaw);
             _suppressCallbacks = false;
 
             RefreshQualityHint();

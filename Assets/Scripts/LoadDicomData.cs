@@ -2107,10 +2107,11 @@ public class LoadDicomData : MonoBehaviour
         float d = -Vector3.Dot(normal, point);
         Vector4 plane = new Vector4(normal.x, normal.y, normal.z, d);
 
-        // Wyłączona płaszczyzna = taka, po której właściwej stronie leży CAŁA scena. Zerowy wektor
-        // nie wystarczy: shader liczy dot(...) + w > 0, więc przy samych zerach warunek nigdy nie
-        // zachodzi tylko przypadkiem — jawna, bardzo odległa płaszczyzna jest przewidywalna.
-        if (!_clipPlaneEnabled) plane = new Vector4(0f, 1f, 0f, 1e6f);
+        // Wyłączona płaszczyzna musi dawać warunek ZAWSZE FAŁSZYWY. Shader odrzuca próbkę, gdy
+        // dot(normal, worldPos) + w > 0, więc przesunięcie w stronę DODATNIĄ odcina wszystko —
+        // dokładnie tak zniknęła kiedyś cała czaszka. Ujemna, bardzo odległa płaszczyzna zostawia
+        // scenę po właściwej stronie niezależnie od tego, gdzie stoi model.
+        if (!_clipPlaneEnabled) plane = new Vector4(0f, 1f, 0f, -1e6f);
 
         _instancedMaterial.SetVector("_ClipPlane", plane);
 
@@ -2138,22 +2139,45 @@ public class LoadDicomData : MonoBehaviour
         _clipPlaneHandle.name = "ClipPlaneHandle";
         Object.Destroy(_clipPlaneHandle.GetComponent<Collider>()); // zamieniamy na grubszy BoxCollider niżej — łatwiej złapać
 
+        // Wypełniona powierzchnia przesłaniała dokładnie to, po co robi się przekrój — wnętrze
+        // czaszki. Zostaje sama ramka: pokazuje położenie i orientację płaszczyzny, a widok przez
+        // nią jest całkowicie czysty. Siatka Quada służy już tylko jako odniesienie dla rogów.
         var renderer = _clipPlaneHandle.GetComponent<MeshRenderer>();
-        renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
-        renderer.receiveShadows = false;
-        // Sprites/Default: proste, przezroczyste "out of the box" w obu pipeline'ach, bez żonglowania
-        // keywordami URP _SURFACE_TYPE_TRANSPARENT. Fallback na domyślny materiał renderera, gdyby
-        // shader nie był dostępny (np. wystripowany w buildzie) — uchwyt wtedy będzie po prostu opaque.
-        Shader spriteShader = Shader.Find("Sprites/Default");
-        if (spriteShader != null)
+        renderer.enabled = false;
+
+        Shader lineShader = Shader.Find("Sprites/Default");
+        if (lineShader != null)
         {
-            var handleMat = new Material(spriteShader);
-            handleMat.color = new Color(0.25f, 0.7f, 1f, 0.35f); // półprzezroczysty, dobrze widoczny na tle wolumenu
-            renderer.material = handleMat;
+            var frame = _clipPlaneHandle.AddComponent<LineRenderer>();
+            frame.material = new Material(lineShader);
+            frame.startColor = frame.endColor = new Color(0.35f, 0.8f, 1f, 0.9f);
+
+            // Współrzędne lokalne: ramka ma podążać za uchwytem przy obrocie i przesunięciu bez
+            // przeliczania jej punktów za każdym razem.
+            frame.useWorldSpace = false;
+            frame.loop = true;
+            frame.positionCount = 4;
+            frame.SetPositions(new[]
+            {
+                new Vector3(-0.5f, -0.5f, 0f),
+                new Vector3( 0.5f, -0.5f, 0f),
+                new Vector3( 0.5f,  0.5f, 0f),
+                new Vector3(-0.5f,  0.5f, 0f)
+            });
+
+            // Szerokość w jednostkach lokalnych, więc skaluje się razem z uchwytem — stała wartość
+            // w metrach byłaby albo niewidoczna na małym modelu, albo gruba jak belka na dużym.
+            frame.widthMultiplier = 0.02f;
+            frame.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            frame.receiveShadows = false;
+            frame.alignment = LineAlignment.TransformZ;
         }
         else
         {
-            Debug.LogWarning("[LoadDicomData] Shader 'Sprites/Default' niedostępny — uchwyt płaszczyzny przekroju będzie nieprzezroczysty.");
+            // Bez shadera ramki nie ma czym narysować — lepiej pokazać półprzezroczystą taflę niż nic.
+            renderer.enabled = true;
+            Debug.LogWarning("[LoadDicomData] Shader 'Sprites/Default' niedostępny — płaszczyzna przekroju " +
+                             "będzie wypełniona zamiast obrysowana ramką.");
         }
 
         var handleCollider = _clipPlaneHandle.AddComponent<BoxCollider>();
@@ -2453,7 +2477,7 @@ public class LoadDicomData : MonoBehaviour
         if (_clipPlaneHandle == null || volumeCube == null) return;
 
         Transform vt = volumeCube.transform;
-        Vector3 axisDir = _clipPlaneAxis switch
+        Vector3 baseDir = _clipPlaneAxis switch
         {
             0 => vt.right,
             2 => vt.forward,
@@ -2466,9 +2490,35 @@ public class LoadDicomData : MonoBehaviour
             _ => vt.lossyScale.y
         };
 
-        _clipPlaneHandle.transform.position = vt.position + axisDir * (cutHeight * extent * 0.5f);
-        _clipPlaneHandle.transform.rotation = Quaternion.LookRotation(axisDir, vt.forward == axisDir ? vt.up : vt.forward);
+        // Oś to punkt wyjścia, a nie ograniczenie — dwa kąty pozwalają ustawić dowolne nachylenie
+        // bez chwytania uchwytu, czyli także na komputerze, gdzie chwytanie nie działa.
+        Vector3 sideRef = Mathf.Abs(Vector3.Dot(baseDir, vt.forward)) > 0.9f ? vt.up : vt.forward;
+        Vector3 tiltAxis = Vector3.Cross(baseDir, sideRef).normalized;
+
+        Quaternion tilt = Quaternion.AngleAxis(_clipPlanePitch, tiltAxis) *
+                          Quaternion.AngleAxis(_clipPlaneYaw, baseDir);
+        Vector3 normal = tilt * baseDir;
+
+        _clipPlaneHandle.transform.position = vt.position + normal * (cutHeight * extent * 0.5f);
+        _clipPlaneHandle.transform.rotation = Quaternion.LookRotation(normal, sideRef);
     }
+
+    /// <summary>Nachylenie płaszczyzny względem wybranej osi, w stopniach.</summary>
+    public float ClipPlanePitch
+    {
+        get => _clipPlanePitch;
+        set { _clipPlanePitch = value; ApplyClipPlaneFromSettings(); }
+    }
+
+    /// <summary>Obrót płaszczyzny wokół wybranej osi, w stopniach.</summary>
+    public float ClipPlaneYaw
+    {
+        get => _clipPlaneYaw;
+        set { _clipPlaneYaw = value; ApplyClipPlaneFromSettings(); }
+    }
+
+    private float _clipPlanePitch;
+    private float _clipPlaneYaw;
 
     public void SetSurfaceThreshold(float value)
     {
