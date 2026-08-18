@@ -2137,7 +2137,9 @@ public class LoadDicomData : MonoBehaviour
 
         _clipPlaneHandle = GameObject.CreatePrimitive(PrimitiveType.Quad);
         _clipPlaneHandle.name = "ClipPlaneHandle";
-        Object.Destroy(_clipPlaneHandle.GetComponent<Collider>()); // zamieniamy na grubszy BoxCollider niżej — łatwiej złapać
+        // Domyślny collider Quada pokrywa całą taflę — zastępujemy go paskami na krawędziach (niżej),
+        // żeby środek przekroju nie przechwytywał promieni lecących w uchwyty modelu pod spodem.
+        Object.Destroy(_clipPlaneHandle.GetComponent<Collider>());
 
         // Wypełniona powierzchnia przesłaniała dokładnie to, po co robi się przekrój — wnętrze
         // czaszki. Zostaje sama ramka: pokazuje położenie i orientację płaszczyzny, a widok przez
@@ -2180,8 +2182,25 @@ public class LoadDicomData : MonoBehaviour
                              "będzie wypełniona zamiast obrysowana ramką.");
         }
 
-        var handleCollider = _clipPlaneHandle.AddComponent<BoxCollider>();
-        handleCollider.size = new Vector3(1f, 1f, 0.05f);
+        // Collidery WYŁĄCZNIE wzdłuż ramki, nie na całej tafli. Pojedynczy collider o rozmiarze
+        // płaszczyzny przechwytywał promienie lecące w uchwyty czaszki pod spodem — nie dało się
+        // wtedy złapać modelu w miejscu, nad którym akurat wisiał przekrój. Cztery paski na
+        // krawędziach zostawiają środek przezroczysty dla celowania, a chwytanie odpowiada temu,
+        // co widać: łapiesz za obrys.
+        const float edge = 0.08f;   // szerokość paska w jednostkach lokalnych
+        const float depth = 0.05f;  // grubość, żeby dało się trafić z boku
+
+        AddEdgeCollider(new Vector3(0f, 0.5f, 0f), new Vector3(1f, edge, depth));   // góra
+        AddEdgeCollider(new Vector3(0f, -0.5f, 0f), new Vector3(1f, edge, depth));  // dół
+        AddEdgeCollider(new Vector3(-0.5f, 0f, 0f), new Vector3(edge, 1f, depth));  // lewa
+        AddEdgeCollider(new Vector3(0.5f, 0f, 0f), new Vector3(edge, 1f, depth));   // prawa
+
+        void AddEdgeCollider(Vector3 center, Vector3 size)
+        {
+            var box = _clipPlaneHandle.AddComponent<BoxCollider>();
+            box.center = center;
+            box.size = size;
+        }
 
         _clipPlaneHandle.transform.SetParent(volumeCube.transform, false);
         _clipPlaneHandle.transform.localScale = Vector3.one * 1.5f; // trochę większy niż wolumin, żeby dobrze było widać orientację
@@ -2493,14 +2512,21 @@ public class LoadDicomData : MonoBehaviour
         // Oś to punkt wyjścia, a nie ograniczenie — dwa kąty pozwalają ustawić dowolne nachylenie
         // bez chwytania uchwytu, czyli także na komputerze, gdzie chwytanie nie działa.
         Vector3 sideRef = Mathf.Abs(Vector3.Dot(baseDir, vt.forward)) > 0.9f ? vt.up : vt.forward;
-        Vector3 tiltAxis = Vector3.Cross(baseDir, sideRef).normalized;
 
-        Quaternion tilt = Quaternion.AngleAxis(_clipPlanePitch, tiltAxis) *
-                          Quaternion.AngleAxis(_clipPlaneYaw, baseDir);
-        Vector3 normal = tilt * baseDir;
+        // Obrót przestawia OŚ, wokół której pochylamy — nie samą normalną. Obracanie wektora wokół
+        // niego samego jest tożsamością i nie dawało żadnego efektu (dokładnie tak ten suwak kiedyś
+        // nie działał). Razem oba kąty opisują dowolny kierunek: obrót wybiera stronę, nachylenie
+        // decyduje jak mocno.
+        Vector3 tiltAxis = Quaternion.AngleAxis(_clipPlaneYaw, baseDir) *
+                           Vector3.Cross(baseDir, sideRef).normalized;
+        Vector3 normal = Quaternion.AngleAxis(_clipPlanePitch, tiltAxis) * baseDir;
 
         _clipPlaneHandle.transform.position = vt.position + normal * (cutHeight * extent * 0.5f);
-        _clipPlaneHandle.transform.rotation = Quaternion.LookRotation(normal, sideRef);
+
+        // Ramka kręci się razem z obrotem także przy zerowym nachyleniu — inaczej suwak wyglądałby
+        // na martwy, mimo że ustawia stronę przyszłego pochylenia.
+        _clipPlaneHandle.transform.rotation =
+            Quaternion.AngleAxis(_clipPlaneYaw, normal) * Quaternion.LookRotation(normal, sideRef);
     }
 
     /// <summary>Nachylenie płaszczyzny względem wybranej osi, w stopniach.</summary>
