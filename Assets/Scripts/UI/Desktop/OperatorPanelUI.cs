@@ -98,6 +98,10 @@ namespace SkullXrRendererNKR.UI.Desktop
             // Menedżer remotingu żyje niezależnie od panelu — bez odpięcia jego zdarzenie sięgałoby
             // po zniszczone już elementy interfejsu.
             if (_remoting != null) _remoting.OnConnectionStateChanged -= RefreshRemotingSection;
+
+            // To samo dotyczy magazynów presetów, które żyją w sesji.
+            foreach (var unsubscribe in _presetUnsubscribers) unsubscribe();
+            _presetUnsubscribers.Clear();
         }
 
         private void Start()

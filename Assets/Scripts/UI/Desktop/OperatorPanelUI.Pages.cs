@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using Cysharp.Threading.Tasks;
 using SkullXrRendererNKR.App;
 using TMPro;
@@ -49,7 +51,8 @@ namespace SkullXrRendererNKR.UI.Desktop
 
         private TextMeshProUGUI _scanInfoText;
 
-        private DesktopUIFactory.SegmentedControl _windowPresets;
+        private TextMeshProUGUI _qualityHint;
+        private readonly List<Action> _presetUnsubscribers = new List<Action>();
         private DesktopUIFactory.SliderControl _windowCenter, _windowWidth, _surfaceThreshold;
         private DesktopUIFactory.SliderControl _visibleMaterialThreshold, _hueLow, _hueHigh;
         private DesktopUIFactory.SegmentedControl _qualitySelector;
@@ -94,6 +97,15 @@ namespace SkullXrRendererNKR.UI.Desktop
 
             DesktopUIFactory.CreateButton(page, "Przywróć pozycję modelu",
                                           () => session.ResetModelPosition());
+
+            DesktopUIFactory.CreateSeparator(page);
+
+            DesktopUIFactory.CreateSectionHeader(page, "Zestaw ustawień");
+            BuildPresetSection(page, session.FullPresets,
+                                "Zapamiętuje KOMPLET ustawień obrazu, rozdzielania struktur i narzędzi — " +
+                                "całe stanowisko pracy pod dany typ badania.",
+                                p => session.ApplyFullPreset(p),
+                                n => session.CaptureFullPreset(n));
 
             DesktopUIFactory.CreateSeparator(page);
             BuildRemotingSection(page);
@@ -193,15 +205,10 @@ namespace SkullXrRendererNKR.UI.Desktop
 
             DesktopUIFactory.CreateSectionHeader(page, "Okno gęstości");
 
-            var windowNames = new string[RadiologyPresets.Windows.Length];
-            for (int i = 0; i < windowNames.Length; i++) windowNames[i] = RadiologyPresets.Windows[i].Name;
-
-            _windowPresets = DesktopUIFactory.CreateSegmented(page, null, windowNames,
-                session.ActiveWindowPresetIndex,
-                i => Apply(() => session.ApplyWindowPreset(RadiologyPresets.Windows[i])));
-
-            DesktopUIFactory.CreateParagraph(page,
-                "Nastawy CT jako punkt wyjścia — niżej można je dowolnie skorygować.");
+            BuildPresetSection(page, session.WindowPresets,
+                                "Zapisz bieżące okno pod własną nazwą, żeby wracać do niego jednym kliknięciem.",
+                                p => session.ApplyWindowPreset(p),
+                                n => session.CaptureWindowPreset(n));
 
             _windowCenter = DesktopUIFactory.CreateSlider(page, "Środek okna", -1000f, 2000f,
                 session.WindowCenterHU, v => Apply(() => session.WindowCenterHU = v), "0", " HU");
@@ -225,6 +232,11 @@ namespace SkullXrRendererNKR.UI.Desktop
                                           () => session.ResetVesselColors(),
                                           DesktopUIFactory.Palette.PanelAlt, 28f);
 
+            BuildPresetSection(page, session.VesselPresets,
+                                "Własne zestawy barw — przydatne, gdy wracasz do tych samych badań.",
+                                p => session.ApplyVesselPreset(p),
+                                n => session.CaptureVesselPreset(n));
+
             DesktopUIFactory.CreateSeparator(page);
 
             DesktopUIFactory.CreateSectionHeader(page, "Renderowanie");
@@ -236,10 +248,20 @@ namespace SkullXrRendererNKR.UI.Desktop
                 "Próg widocznego materiału", -500f, 500f, session.VisibleMaterialThresholdHU,
                 v => Apply(() => session.VisibleMaterialThresholdHU = v), "0", " HU");
 
+            // Podpisy niosą liczbę próbek na przekrój modelu — samo „Wysoka/Średnia/Niska" nie mówi,
+            // czym te poziomy się różnią, a to jest jedyna rzecz, która przekłada się na obraz i FPS.
             _qualitySelector = DesktopUIFactory.CreateSegmented(page, "Gęstość próbkowania",
-                new[] { "Auto", "Wysoka", "Średnia", "Niska" },
+                new[]
+                {
+                    "Auto",
+                    "Wysoka\n" + LoadDicomData.SamplesPerModelFor(LoadDicomData.RaymarchQuality.High),
+                    "Średnia\n" + LoadDicomData.SamplesPerModelFor(LoadDicomData.RaymarchQuality.Medium),
+                    "Niska\n" + LoadDicomData.SamplesPerModelFor(LoadDicomData.RaymarchQuality.Low)
+                },
                 System.Array.IndexOf(QualityOrder, session.RaymarchQuality),
                 i => Apply(() => session.RaymarchQuality = QualityOrder[i]));
+
+            _qualityHint = DesktopUIFactory.CreateParagraph(page, "");
 
             _emptySkipToggle = DesktopUIFactory.CreateToggle(page, "Przeskakiwanie pustki",
                 session.EmptySpaceSkipping, v => Apply(() => session.EmptySpaceSkipping = v));
@@ -256,7 +278,6 @@ namespace SkullXrRendererNKR.UI.Desktop
             if (_windowCenter == null) return;
 
             _suppressCallbacks = true;
-            _windowPresets?.SetIndexWithoutNotify(session.ActiveWindowPresetIndex);
             _windowCenter.SetValueWithoutNotify(session.WindowCenterHU);
             _windowWidth.SetValueWithoutNotify(session.WindowWidthHU);
             _surfaceThreshold.SetValueWithoutNotify(session.SurfaceThreshold);
@@ -266,6 +287,8 @@ namespace SkullXrRendererNKR.UI.Desktop
             _qualitySelector?.SetIndexWithoutNotify(System.Array.IndexOf(QualityOrder, session.RaymarchQuality));
             if (_emptySkipToggle != null) _emptySkipToggle.SetIsOnWithoutNotify(session.EmptySpaceSkipping);
             _suppressCallbacks = false;
+
+            RefreshQualityHint();
         }
 
         #endregion
@@ -512,5 +535,113 @@ namespace SkullXrRendererNKR.UI.Desktop
             if (_suppressCallbacks) return;
             change();
         }
+
+        // ------------------------------------------------------------------
+        #region Presety użytkownika
+
+        /// <summary>
+        /// Sekcja własnych presetów — ta sama w każdym miejscu, w którym da się coś zapisać.
+        /// Zaszytych nastaw nie ma świadomie: wartości dobiera się do konkretnego badania, więc
+        /// cudze liczby i tak trzeba by poprawiać. Zamiast tego użytkownik zapisuje swoje.
+        ///
+        /// Lista przebudowuje się z PresetStore.OnChanged — tak samo, jak lista obiektów reaguje
+        /// na OnTargetsChanged.
+        /// </summary>
+        private void BuildPresetSection(Transform page, PresetStore store, string hint,
+                                        Action<Preset> apply, Action<string> capture)
+        {
+            DesktopUIFactory.CreateParagraph(page, hint);
+
+            var list = DesktopUIFactory.CreateRect(page, "Presets");
+            DesktopUIFactory.AddVerticalLayout(list.gameObject, 4f, 0);
+
+            var nameRow = DesktopUIFactory.CreateRect(page, "SaveRow");
+            DesktopUIFactory.AddHorizontalLayout(nameRow.gameObject, 6f);
+            DesktopUIFactory.SetHeight(nameRow.gameObject, DesktopUIFactory.RowHeight);
+
+            var nameInput = DesktopUIFactory.CreateInputField(nameRow, "nazwa presetu");
+
+            var saveButton = DesktopUIFactory.CreateButton(nameRow, "Zapisz", null,
+                                                           DesktopUIFactory.Palette.Accent);
+            saveButton.gameObject.GetComponent<LayoutElement>().preferredWidth = 90f;
+            saveButton.gameObject.GetComponent<LayoutElement>().flexibleWidth = 0f;
+
+            saveButton.onClick.AddListener(() =>
+            {
+                if (string.IsNullOrWhiteSpace(nameInput.text)) return;
+                capture(nameInput.text);
+                nameInput.SetTextWithoutNotify("");
+            });
+
+            void Rebuild()
+            {
+                if (list == null) return;
+
+                for (int i = list.childCount - 1; i >= 0; i--)
+                    Destroy(list.GetChild(i).gameObject);
+
+                if (store.All.Count == 0)
+                {
+                    DesktopUIFactory.CreateParagraph(list, "Brak zapisanych presetów.");
+                    return;
+                }
+
+                foreach (var preset in store.All)
+                {
+                    var captured = preset;
+
+                    var row = DesktopUIFactory.CreateRect(list, "Preset_" + preset.Name);
+                    DesktopUIFactory.AddHorizontalLayout(row.gameObject, 4f);
+                    DesktopUIFactory.SetHeight(row.gameObject, 30f);
+
+                    DesktopUIFactory.CreateButton(row, preset.Name,
+                                                  () => Apply(() => apply(captured)),
+                                                  DesktopUIFactory.Palette.PanelAlt, 30f);
+
+                    // Usuwanie stoi przy swoim presecie, a nie w osobnym trybie edycji — przy kilku
+                    // pozycjach osobny tryb kosztowałby więcej kliknięć niż oszczędzał miejsca.
+                    var remove = DesktopUIFactory.CreateButton(row, "×",
+                                                               () => store.Delete(captured.Name),
+                                                               DesktopUIFactory.Palette.AccentDanger, 30f);
+                    var removeLayout = remove.gameObject.GetComponent<LayoutElement>();
+                    removeLayout.preferredWidth = 34f;
+                    removeLayout.flexibleWidth = 0f;
+                }
+            }
+
+            store.OnChanged += Rebuild;
+            // Magazyn żyje w sesji, a panel bywa niszczony — bez odpięcia jego zdarzenie sięgałoby
+            // po zniszczone elementy interfejsu.
+            _presetUnsubscribers.Add(() => store.OnChanged -= Rebuild);
+            Rebuild();
+        }
+
+        /// <summary>
+        /// Opis dobranego poziomu próbkowania. Dla Auto pokazuje, co faktycznie wybrał sprzęt —
+        /// bez tego „Auto" jest jedyną pozycją, przy której nie wiadomo, ile próbek się dostaje.
+        /// </summary>
+        private void RefreshQualityHint()
+        {
+            if (_qualityHint == null) return;
+
+            var resolved = session.ResolvedRaymarchQuality;
+            int samples = LoadDicomData.SamplesPerModelFor(resolved);
+
+            string prefix = session.RaymarchQuality == LoadDicomData.RaymarchQuality.Auto
+                ? $"Auto dobrało poziom {ResolvedName(resolved)} — "
+                : "";
+
+            _qualityHint.text = prefix +
+                $"{samples} próbek na przekrój modelu. Więcej próbek to ostrzejszy obraz i niższy FPS.";
+        }
+
+        private static string ResolvedName(LoadDicomData.RaymarchQuality q) => q switch
+        {
+            LoadDicomData.RaymarchQuality.Low => "niski",
+            LoadDicomData.RaymarchQuality.Medium => "średni",
+            _ => "wysoki"
+        };
+
+        #endregion
     }
 }

@@ -1914,6 +1914,28 @@ public class LoadDicomData : MonoBehaviour
     /// dźwignia jakość↔płynność, jaką mamy — i jedyna, która pozwala tej samej scenie działać i na
     /// desktopie, i na HoloLens. Wołane po zbudowaniu wolumenu oraz z SetRaymarchQuality.
     /// </summary>
+    /// <summary>
+    /// Krok raymarchingu dla danego poziomu. Wydzielone z ApplyRaymarchQuality, żeby interfejs mógł
+    /// pokazać, co poziomy właściwie znaczą, bez powielania tych liczb w drugim miejscu.
+    /// </summary>
+    public static float StepSizeFor(RaymarchQuality tier) => tier switch
+    {
+        RaymarchQuality.Low    => 0.0025f,
+        RaymarchQuality.Medium => 0.0012f,
+        _                      => 0.0005f
+    };
+
+    /// <summary>
+    /// Ile próbek przypada na przekrój modelu przy danym poziomie. Bryła w przestrzeni lokalnej ma
+    /// rozmiar 1.0, więc to po prostu odwrotność kroku — i jest to liczba znacznie bardziej mówiąca
+    /// niż samo „Wysoka/Średnia/Niska".
+    /// </summary>
+    public static int SamplesPerModelFor(RaymarchQuality tier) =>
+        Mathf.RoundToInt(1f / StepSizeFor(tier));
+
+    /// <summary>Poziom faktycznie użyty — dla Auto rozwiązany po właściwościach sprzętu.</summary>
+    public RaymarchQuality ResolvedRaymarchQuality { get; private set; } = RaymarchQuality.High;
+
     private void ApplyRaymarchQuality()
     {
         RaymarchQuality tier = raymarchQuality;
@@ -1928,13 +1950,8 @@ public class LoadDicomData : MonoBehaviour
             tier = weakGpu ? RaymarchQuality.Low : (midGpu ? RaymarchQuality.Medium : RaymarchQuality.High);
         }
 
-        float step = tier switch
-        {
-            RaymarchQuality.Low    => 0.0025f,
-            RaymarchQuality.Medium => 0.0012f,
-            _                      => 0.0005f
-        };
-
+        ResolvedRaymarchQuality = tier;
+        float step = StepSizeFor(tier);
         _stepSizeInUse = step;
 
         // Limit iteracji MUSI wynikać z kroku, nie być stałą: promień musi móc przejść bryłę na wylot

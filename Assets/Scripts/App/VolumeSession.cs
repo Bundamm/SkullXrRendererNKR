@@ -34,6 +34,15 @@ namespace SkullXrRendererNKR.App
         public Helpers.VolumePicker volumePicker;
         public Helpers.VolumeObjectManager objectManager;
 
+        /// <summary>
+        /// Stan wyjściowy okna gęstości: zakres tak szeroki, że nic nie jest wygaszane. To NIE jest
+        /// preset — użytkownik nie może go usunąć. Bez niego, po skasowaniu wszystkich własnych
+        /// presetów, nie dałoby się wrócić do widoku „pokaż wszystko" inaczej niż ręcznym
+        /// rozsuwaniem suwaków.
+        /// </summary>
+        public const float DefaultWindowCenterHU = 1000f;
+        public const float DefaultWindowWidthHU = 6000f;
+
         [Header("Wartości startowe renderowania")]
         [Tooltip("Środek okna gęstości (HU). Te same wartości domyślne co w shaderze — trzymamy je tutaj, bo shader ich nie oddaje z powrotem, a UI musi startować z prawidłowo ustawionymi suwakami.")]
         public float windowCenterHU = 191f;
@@ -140,8 +149,8 @@ namespace SkullXrRendererNKR.App
             // renderer je ignorował — więc stanem faktycznym, jaki użytkownik do tej pory widział,
             // jest pełny zakres. Wzięcie tych liczb dosłownie zaczęłoby teraz wygaszać wszystko
             // powyżej 375 HU, czyli kość, i model zmieniłby się sam z siebie przy pierwszym starcie.
-            windowCenterHU = RadiologyPresets.FullRange.CenterHU;
-            windowWidthHU = RadiologyPresets.FullRange.WidthHU;
+            windowCenterHU = DefaultWindowCenterHU;
+            windowWidthHU = DefaultWindowWidthHU;
             if (dicomData != null)
             {
                 dicomData.SetWindowCenter(windowCenterHU);
@@ -304,6 +313,10 @@ namespace SkullXrRendererNKR.App
             }
         }
 
+        /// <summary>Poziom faktycznie użyty — dla Auto rozwiązany po klasie sprzętu.</summary>
+        public LoadDicomData.RaymarchQuality ResolvedRaymarchQuality =>
+            dicomData != null ? dicomData.ResolvedRaymarchQuality : LoadDicomData.RaymarchQuality.High;
+
         public bool EmptySpaceSkipping
         {
             get => dicomData != null && dicomData.enableEmptySkipping;
@@ -321,21 +334,101 @@ namespace SkullXrRendererNKR.App
         /// powiadomienie — ustawiane osobno przez zwykłe settery dawałyby stan pośredni (nowy środek
         /// przy starej szerokości), który przez chwilę wygląda jak zupełnie inne okno.
         /// </summary>
-        public void ApplyWindowPreset(WindowPreset preset)
+        #region Presety użytkownika
+
+        /// <summary>
+        /// Osobne magazyny dla osobnych grup ustawień: okno i barwy przełącza się w trakcie oglądania,
+        /// więc mają własne, szybkie listy. „Zestaw" zapamiętuje komplet — całe stanowisko pracy pod
+        /// konkretny typ badania.
+        /// </summary>
+        public readonly PresetStore WindowPresets = new PresetStore("window");
+        public readonly PresetStore VesselPresets = new PresetStore("vessels");
+        public readonly PresetStore FullPresets = new PresetStore("full");
+
+        public void CaptureWindowPreset(string name) =>
+            WindowPresets.Save(name, windowCenterHU, windowWidthHU);
+
+        /// <summary>
+        /// Ustawia okno JEDNYM przebiegiem. Środek i szerokość muszą trafić razem — ustawiane osobno
+        /// dają stan pośredni (nowy środek przy starej szerokości), który przez chwilę wygląda jak
+        /// zupełnie inne okno.
+        /// </summary>
+        public void ApplyWindowPreset(Preset preset)
         {
             if (dicomData == null) return;
 
-            windowCenterHU = preset.CenterHU;
-            windowWidthHU = preset.WidthHU;
-            dicomData.SetWindowCenter(preset.CenterHU);
-            dicomData.SetWindowWidth(preset.WidthHU);
+            windowCenterHU = preset.Get(0, windowCenterHU);
+            windowWidthHU = preset.Get(1, windowWidthHU);
+            dicomData.SetWindowCenter(windowCenterHU);
+            dicomData.SetWindowWidth(windowWidthHU);
 
-            SetStatus($"Okno: {preset.Name} ({preset.CenterHU:0} / {preset.WidthHU:0} HU)");
+            SetStatus($"Okno: {preset.Name} ({windowCenterHU:0} / {windowWidthHU:0} HU)");
             OnRenderSettingsChanged?.Invoke();
         }
 
-        /// <summary>Nastawa okna odpowiadająca bieżącym wartościom, albo -1 gdy ustawiono je ręcznie.</summary>
-        public int ActiveWindowPresetIndex => RadiologyPresets.IndexOfWindow(windowCenterHU, windowWidthHU);
+        public void CaptureVesselPreset(string name) =>
+            VesselPresets.Save(name, vesselHueLow, vesselHueHigh);
+
+        public void ApplyVesselPreset(Preset preset)
+        {
+            if (dicomData == null) return;
+
+            vesselHueLow = preset.Get(0, vesselHueLow);
+            vesselHueHigh = preset.Get(1, vesselHueHigh);
+            dicomData.SetVesselColorLowHue(vesselHueLow);
+            dicomData.SetVesselColorHighHue(vesselHueHigh);
+
+            SetStatus($"Barwy: {preset.Name}");
+            OnRenderSettingsChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Zapisuje KOMPLET ustawień. Kolejność wartości jest kontraktem z ApplyFullPreset i musi się
+        /// zgadzać w obie strony — dlatego obie metody stoją obok siebie, a odczyt używa wartości
+        /// zastępczych, żeby preset zapisany starszą wersją nie wyzerował nowo dodanych pól.
+        /// </summary>
+        public void CaptureFullPreset(string name) =>
+            FullPresets.Save(name,
+                windowCenterHU, windowWidthHU, surfaceThreshold,
+                vesselHueLow, vesselHueHigh, VisibleMaterialThresholdHU,
+                (float)RaymarchQuality, EmptySpaceSkipping ? 1f : 0f,
+                MorphThresholdHU, MorphErosionRadius, MorphExpandRadius,
+                BrushRadiusMM, CutThresholdHU, MaxCutDepthMM);
+
+        public void ApplyFullPreset(Preset preset)
+        {
+            if (dicomData == null) return;
+
+            windowCenterHU = preset.Get(0, windowCenterHU);
+            windowWidthHU = preset.Get(1, windowWidthHU);
+            surfaceThreshold = preset.Get(2, surfaceThreshold);
+            vesselHueLow = preset.Get(3, vesselHueLow);
+            vesselHueHigh = preset.Get(4, vesselHueHigh);
+
+            dicomData.SetWindowCenter(windowCenterHU);
+            dicomData.SetWindowWidth(windowWidthHU);
+            dicomData.SetSurfaceThreshold(surfaceThreshold);
+            dicomData.SetVesselColorLowHue(vesselHueLow);
+            dicomData.SetVesselColorHighHue(vesselHueHigh);
+
+            VisibleMaterialThresholdHU = preset.Get(5, VisibleMaterialThresholdHU);
+            RaymarchQuality = (LoadDicomData.RaymarchQuality)Mathf.RoundToInt(preset.Get(6, (float)RaymarchQuality));
+            EmptySpaceSkipping = preset.Get(7, EmptySpaceSkipping ? 1f : 0f) > 0.5f;
+
+            MorphThresholdHU = preset.Get(8, MorphThresholdHU);
+            MorphErosionRadius = Mathf.RoundToInt(preset.Get(9, MorphErosionRadius));
+            MorphExpandRadius = Mathf.RoundToInt(preset.Get(10, MorphExpandRadius));
+
+            BrushRadiusMM = preset.Get(11, BrushRadiusMM);
+            CutThresholdHU = preset.Get(12, CutThresholdHU);
+            MaxCutDepthMM = preset.Get(13, MaxCutDepthMM);
+
+            SetStatus($"Wczytano zestaw: {preset.Name}. Rozdzielanie struktur wymaga przeliczenia.");
+            OnRenderSettingsChanged?.Invoke();
+            OnSegmentationSettingsChanged?.Invoke();
+        }
+
+        #endregion
 
         /// <summary>Dosyła komplet ustawień renderowania na materiały — patrz HandleVolumeReady.</summary>
         public void PushRenderSettings()
