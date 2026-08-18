@@ -114,3 +114,6 @@ Assets/StreamingAssets/Scans/
 .agent/
 .idea/
 Assets/en/
+
+# Lokalne ustawienia narzedzi deweloperskich
+.claude/
