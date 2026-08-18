@@ -217,6 +217,8 @@ namespace Helpers
                 }
             }
 
+            UpdateAimingCursor();
+
             HandleMouseInput();
 
             // UWAGA KOLEJNOŚCI: ten check MUSI być PO ProcessXRBrushContinuous()/HandleMouseInput().
@@ -248,6 +250,153 @@ namespace Helpers
                 RegenerateMorphologyAsync().Forget();
             }
         }
+
+        // ------------------------------------------------------------------
+        #region Celowanie: kursor i stabilizacja
+
+        [Header("Celowanie (XR)")]
+        [Tooltip("Ile ostatnich klatek uśredniać przy wyznaczaniu punktu celowania. Promień z dłoni na HoloLens 2 drży o ok. 1-2 cm na metr; uśrednienie wycina to drżenie kosztem minimalnego opóźnienia. 1 = bez stabilizacji.")]
+        [Range(1, 20)] public int AimSmoothingFrames = 8;
+
+        [Tooltip("Pokazuj pierścień zasięgu narzędzia w miejscu celowania.")]
+        public bool ShowAimingCursor = true;
+
+        private AimingCursor _cursor;
+        private readonly Vector3[] _aimSamples = new Vector3[20];
+        private int _aimSampleCount;
+        private int _aimSampleHead;
+
+        /// <summary>
+        /// Uśredniony punkt celowania. Bufor kołowy zamiast filtru wykładniczego, bo przy stałym
+        /// oknie łatwiej przewidzieć opóźnienie: N klatek to N/60 sekundy i tyle.
+        /// </summary>
+        private Vector3 PushAimSample(Vector3 point)
+        {
+            int window = Mathf.Clamp(AimSmoothingFrames, 1, _aimSamples.Length);
+
+            _aimSamples[_aimSampleHead] = point;
+            _aimSampleHead = (_aimSampleHead + 1) % window;
+            if (_aimSampleCount < window) _aimSampleCount++;
+
+            Vector3 sum = Vector3.zero;
+            for (int i = 0; i < _aimSampleCount; i++) sum += _aimSamples[i];
+            return sum / _aimSampleCount;
+        }
+
+        private void ResetAimSamples()
+        {
+            _aimSampleCount = 0;
+            _aimSampleHead = 0;
+        }
+
+        /// <summary>
+        /// Zasięg narzędzia przeliczony z milimetrów pacjenta na jednostki świata. Bez tego pierścień
+        /// nie odpowiadałby temu, co faktycznie zostanie wycięte — a to jest cały jego sens.
+        /// </summary>
+        private float BrushWorldRadius(VolumeRenderTarget target)
+        {
+            if (_dicomData == null || target?.ProxyTransform == null) return 0.01f;
+
+            float volumeWidthMM = Mathf.Max(_dicomData.Width * _dicomData.PixelSpacingX, 0.0001f);
+            float worldPerMM = target.ProxyTransform.lossyScale.x / volumeWidthMM;
+            return Mathf.Max(BrushRadiusMM * worldPerMM, 0.0005f);
+        }
+
+        /// <summary>
+        /// Promień celowania — z interactora trzymającego pędzel, a gdy nic nie jest wciśnięte,
+        /// z tego, który aktualnie wskazuje którykolwiek obiekt. Bez tej drugiej ścieżki kursor
+        /// pojawiałby się dopiero po naciśnięciu, czyli wtedy, gdy jest już za późno na korektę.
+        ///
+        /// Na komputerze spada na promień z kamery przez pozycję myszy — panel operatora używa tej
+        /// samej ścieżki celowania co gogle, więc podgląd działa w obu warstwach.
+        /// </summary>
+        private bool TryGetAimRay(out Vector3 origin, out Vector3 direction)
+        {
+            origin = Vector3.zero;
+            direction = Vector3.forward;
+
+            if (_activeInteractor is UnityEngine.XR.Interaction.Toolkit.Interactors.XRRayInteractor active &&
+                active.TryGetCurrent3DRaycastHit(out RaycastHit _))
+            {
+                origin = active.transform.position;
+                direction = active.transform.forward;
+                return true;
+            }
+
+            // Żaden obiekt nie jest chwycony — szukamy interactora, który cokolwiek wskazuje.
+            if (_objectManager != null)
+            {
+                var targets = _objectManager.Targets;
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    var proxy = targets[i].BrushProxy;
+                    if (proxy == null || !proxy.activeInHierarchy) continue;
+
+                    var interactable = proxy.GetComponent<UnityEngine.XR.Interaction.Toolkit.Interactables.XRSimpleInteractable>();
+                    if (interactable == null || interactable.interactorsHovering.Count == 0) continue;
+
+                    var hovering = interactable.interactorsHovering[0];
+                    if (hovering?.transform == null) continue;
+
+                    origin = hovering.transform.position;
+                    direction = hovering.transform.forward;
+                    return true;
+                }
+            }
+
+            if (_mainCamera != null && UnityEngine.InputSystem.Mouse.current != null)
+            {
+                Vector2 mouse = UnityEngine.InputSystem.Mouse.current.position.ReadValue();
+                Ray mouseRay = _mainCamera.ScreenPointToRay(mouse);
+                origin = mouseRay.origin;
+                direction = mouseRay.direction;
+                return true;
+            }
+
+            return false;
+        }
+
+        private void UpdateAimingCursor()
+        {
+            if (!ShowAimingCursor || _dicomData == null)
+            {
+                _cursor?.Hide();
+                return;
+            }
+
+            if (_cursor == null) _cursor = AimingCursor.Create(transform);
+
+            // Celowanie bierzemy z interactora, który AKTUALNIE wskazuje — również gdy nic nie jest
+            // wciśnięte. To jest istota podglądu: użytkownik ma widzieć cel, zanim naciśnie.
+            if (!TryGetAimRay(out Vector3 origin, out Vector3 direction))
+            {
+                _cursor.Hide();
+                ResetAimSamples();
+                return;
+            }
+
+            if (!TryResolveTarget(new Ray(origin, direction), out RaycastHit hit, out VolumeRenderTarget target))
+            {
+                _cursor.Hide();
+                ResetAimSamples();
+                return;
+            }
+
+            Vector3 smoothed = PushAimSample(hit.point);
+
+            Color color = CurrentMode switch
+            {
+                ToolMode.Cut => AimingCursor.ColorCut,
+                ToolMode.TunnelCut => AimingCursor.ColorCut,
+                ToolMode.RemoveIsland => AimingCursor.ColorErase,
+                ToolMode.Picker => AimingCursor.ColorPick,
+                _ => AimingCursor.ColorInactive
+            };
+
+            _cursor.Show(smoothed, hit.normal, BrushWorldRadius(target), color);
+        }
+
+        #endregion
 
         private bool IsBrushCurrentlyHeld()
         {
