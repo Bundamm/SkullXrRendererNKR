@@ -313,6 +313,49 @@ namespace SkullXrRendererNKR.App
             }
         }
 
+        /// <summary>
+        /// Płaszczyzna przekroju — czysto wizualne odcięcie widoku, bez ruszania danych.
+        /// Sterowana z obu warstw: suwakiem w panelu i w menu na dłoni, a w goglach dodatkowo
+        /// chwytaniem uchwytu. Wszystkie trzy drogi opisują ten sam stan.
+        /// </summary>
+        public bool ClipPlaneEnabled
+        {
+            get => dicomData != null && dicomData.ClipPlaneEnabled;
+            set
+            {
+                if (dicomData == null || dicomData.ClipPlaneEnabled == value) return;
+                dicomData.ClipPlaneEnabled = value;
+                OnRenderSettingsChanged?.Invoke();
+            }
+        }
+
+        /// <summary>Oś przekroju: 0 = X, 1 = Y, 2 = Z, licząc względem modelu.</summary>
+        public int ClipPlaneAxis
+        {
+            get => dicomData != null ? dicomData.ClipPlaneAxis : 1;
+            set
+            {
+                if (dicomData == null || dicomData.ClipPlaneAxis == value) return;
+                dicomData.ClipPlaneAxis = value;
+                OnRenderSettingsChanged?.Invoke();
+            }
+        }
+
+        /// <summary>Położenie płaszczyzny wzdłuż osi, -1..1 względem rozmiaru bryły.</summary>
+        public float ClipPlaneOffset
+        {
+            get => clipPlaneOffset;
+            set
+            {
+                if (Mathf.Approximately(clipPlaneOffset, value)) return;
+                clipPlaneOffset = value;
+                if (dicomData != null) dicomData.SetCutHeight(value);
+                OnRenderSettingsChanged?.Invoke();
+            }
+        }
+
+        [SerializeField, Range(-1f, 1f)] private float clipPlaneOffset = 0f;
+
         /// <summary>Poziom faktycznie użyty — dla Auto rozwiązany po klasie sprzętu.</summary>
         public LoadDicomData.RaymarchQuality ResolvedRaymarchQuality =>
             dicomData != null ? dicomData.ResolvedRaymarchQuality : LoadDicomData.RaymarchQuality.High;

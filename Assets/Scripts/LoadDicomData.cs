@@ -2105,7 +2105,21 @@ public class LoadDicomData : MonoBehaviour
         }
 
         float d = -Vector3.Dot(normal, point);
-        _instancedMaterial.SetVector("_ClipPlane", new Vector4(normal.x, normal.y, normal.z, d));
+        Vector4 plane = new Vector4(normal.x, normal.y, normal.z, d);
+
+        // Wyłączona płaszczyzna = taka, po której właściwej stronie leży CAŁA scena. Zerowy wektor
+        // nie wystarczy: shader liczy dot(...) + w > 0, więc przy samych zerach warunek nigdy nie
+        // zachodzi tylko przypadkiem — jawna, bardzo odległa płaszczyzna jest przewidywalna.
+        if (!_clipPlaneEnabled) plane = new Vector4(0f, 1f, 0f, 1e6f);
+
+        _instancedMaterial.SetVector("_ClipPlane", plane);
+
+        // Wydzielone obiekty i kosze mają WŁASNE klony materiału — bez tego przekrój działałby
+        // wyłącznie na głównej bryle, a odłożony na bok fragment zostawałby nieprzecięty.
+        if (volumeObjectManager == null) return;
+        var targets = volumeObjectManager.Targets;
+        for (int i = 0; i < targets.Count; i++)
+            if (targets[i].Material != null) targets[i].Material.SetVector("_ClipPlane", plane);
     }
 
     /// <summary>
@@ -2149,8 +2163,11 @@ public class LoadDicomData : MonoBehaviour
         _clipPlaneHandle.transform.localScale = Vector3.one * 1.5f; // trochę większy niż wolumin, żeby dobrze było widać orientację
         // Świat, nie lokalnie: odtwarzamy dokładnie starą formułę (worldPos + up*cutHeight), a forward
         // ma wskazywać world-up na start (Quad domyślnie patrzy lokalnie w -Z, stąd jawny LookRotation).
-        _clipPlaneHandle.transform.position = volumeCube.transform.position + Vector3.up * cutHeight;
-        _clipPlaneHandle.transform.rotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
+        // Uchwyt startuje UKRYTY: przekrój jest narzędziem doraźnym, a półprzezroczysty prostokąt
+        // wiszący nad modelem i niczego nieprzecinający wygląda jak usterka. Pokazuje go dopiero
+        // włączenie przekroju w panelu albo w menu na dłoni.
+        _clipPlaneHandle.SetActive(_clipPlaneEnabled);
+        ApplyClipPlaneFromSettings();
 
         var handleManip = _clipPlaneHandle.AddComponent<MixedReality.Toolkit.SpatialManipulation.ObjectManipulator>();
         handleManip.HostTransform = _clipPlaneHandle.transform;
@@ -2390,13 +2407,67 @@ public class LoadDicomData : MonoBehaviour
     public void SetCutHeight(float value)
     {
         cutHeight = value;
-        // Suwak = szybki reset do poziomej płaszczyzny na danej wysokości (odrzuca ewentualny ręczny
-        // obrót uchwytu) — pełna, dowolna orientacja jest ustawiana przez złapanie i obrócenie uchwytu.
-        if (_clipPlaneHandle != null)
+        ApplyClipPlaneFromSettings();
+    }
+
+    /// <summary>
+    /// Oś, wzdłuż której tnie płaszczyzna przekroju: 0 = X (lewo-prawo), 1 = Y (góra-dół),
+    /// 2 = Z (przód-tył). Osie są liczone WZGLĘDEM MODELU, nie świata — inaczej po obróceniu
+    /// czaszki „przekrój poprzeczny” przestawałby być poprzeczny.
+    /// </summary>
+    public int ClipPlaneAxis
+    {
+        get => _clipPlaneAxis;
+        set { _clipPlaneAxis = Mathf.Clamp(value, 0, 2); ApplyClipPlaneFromSettings(); }
+    }
+
+    /// <summary>
+    /// Czy płaszczyzna cokolwiek odcina. Wyłączona chowa też uchwyt — wiszący nad modelem
+    /// półprzezroczysty prostokąt, który niczego nie przecina, wygląda jak usterka.
+    /// </summary>
+    public bool ClipPlaneEnabled
+    {
+        get => _clipPlaneEnabled;
+        set
         {
-            _clipPlaneHandle.transform.rotation = Quaternion.LookRotation(Vector3.up, Vector3.forward);
-            _clipPlaneHandle.transform.position = volumeCube.transform.position + Vector3.up * value;
+            _clipPlaneEnabled = value;
+            if (_clipPlaneHandle != null) _clipPlaneHandle.SetActive(value);
+            ApplyClipPlaneFromSettings();
         }
+    }
+
+    private int _clipPlaneAxis = 1;
+    private bool _clipPlaneEnabled;
+
+    /// <summary>
+    /// Ustawia uchwyt zgodnie z osią i przesunięciem. Uchwyt zostaje jedynym źródłem prawdy dla
+    /// shadera (patrz UpdateClipPlane) — dzięki temu sterowanie suwakiem z panelu i chwytanie
+    /// dłonią w goglach opisują ten sam stan, zamiast walczyć o pierwszeństwo.
+    ///
+    /// Przesunięcie jest w jednostkach BRYŁY, nie świata: model ma różne wymiary fizyczne
+    /// w każdej osi, więc ten sam suwak musi przejechać przez całą czaszkę niezależnie od tego,
+    /// którą oś się wybierze.
+    /// </summary>
+    private void ApplyClipPlaneFromSettings()
+    {
+        if (_clipPlaneHandle == null || volumeCube == null) return;
+
+        Transform vt = volumeCube.transform;
+        Vector3 axisDir = _clipPlaneAxis switch
+        {
+            0 => vt.right,
+            2 => vt.forward,
+            _ => vt.up
+        };
+        float extent = _clipPlaneAxis switch
+        {
+            0 => vt.lossyScale.x,
+            2 => vt.lossyScale.z,
+            _ => vt.lossyScale.y
+        };
+
+        _clipPlaneHandle.transform.position = vt.position + axisDir * (cutHeight * extent * 0.5f);
+        _clipPlaneHandle.transform.rotation = Quaternion.LookRotation(axisDir, vt.forward == axisDir ? vt.up : vt.forward);
     }
 
     public void SetSurfaceThreshold(float value)

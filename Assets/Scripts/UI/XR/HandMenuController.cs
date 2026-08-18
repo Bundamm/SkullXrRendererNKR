@@ -76,6 +76,8 @@ namespace SkullXrRendererNKR.UI.XR
         private PressableButton[] _toolButtons;
         private Slider _brushSlider;
         private GameObject _undoButton;
+        private GameObject _clipToggleButton, _clipAxisButton;
+        private Slider _clipSlider;
 
         private bool _suppressCallbacks;
 
@@ -128,6 +130,7 @@ namespace SkullXrRendererNKR.UI.XR
             session.OnBrushRadiusChanged += HandleBrushRadiusChanged;
             session.OnTargetsChanged += RebuildObjectRows;
             session.OnUndoHistoryChanged += RefreshUndoButton;
+            session.OnRenderSettingsChanged += RefreshClipControls;
         }
 
         private void OnDisable()
@@ -137,6 +140,7 @@ namespace SkullXrRendererNKR.UI.XR
             session.OnBrushRadiusChanged -= HandleBrushRadiusChanged;
             session.OnTargetsChanged -= RebuildObjectRows;
             session.OnUndoHistoryChanged -= RefreshUndoButton;
+            session.OnRenderSettingsChanged -= RefreshClipControls;
         }
 
         private void Start()
@@ -144,6 +148,7 @@ namespace SkullXrRendererNKR.UI.XR
             HandleToolModeChanged(session.ToolMode);
             HandleBrushRadiusChanged(session.BrushRadiusMM);
             RefreshUndoButton();
+            RefreshClipControls();
             RebuildObjectRows();
             ShowPage(Page.Tools);
         }
@@ -223,8 +228,28 @@ namespace SkullXrRendererNKR.UI.XR
 
         private void BuildViewPage()
         {
-            CloneSlider("Przekrój", cutHeightRange.x, cutHeightRange.y, 1f,
-                        v => { if (session.dicomData != null) session.dicomData.SetCutHeight(v); },
+            // Przekrój bez włącznika nie miał sensu: uchwyt wisiał nad modelem także wtedy, gdy nikt
+            // z niego nie korzystał. Przełącznik pokazuje go dopiero na żądanie i od razu włącza
+            // odcinanie, więc suwak poniżej ma co przesuwać.
+            _clipToggleButton = CloneButton(ClipLabel(), () =>
+            {
+                session.ClipPlaneEnabled = !session.ClipPlaneEnabled;
+                SetLabel(_clipToggleButton, ClipLabel());
+            });
+            AddToPage(Page.View, _clipToggleButton);
+
+            _clipAxisButton = CloneButton(ClipAxisLabel(), () =>
+            {
+                // Jeden przycisk cyklicznie zamiast trzech: w menu na dłoni każdy element to cała
+                // komórka siatki, a oś zmienia się rzadziej niż położenie.
+                session.ClipPlaneAxis = (session.ClipPlaneAxis + 1) % 3;
+                SetLabel(_clipAxisButton, ClipAxisLabel());
+            });
+            AddToPage(Page.View, _clipAxisButton);
+
+            _clipSlider = CloneSlider("Przekrój", cutHeightRange.x, cutHeightRange.y,
+                        session.ClipPlaneOffset,
+                        v => Apply(() => session.ClipPlaneOffset = v),
                         out var cutGo);
             if (cutGo != null) AddToPage(Page.View, cutGo);
 
@@ -444,6 +469,30 @@ namespace SkullXrRendererNKR.UI.XR
             _brushSlider.Value = Mathf.Clamp(radiusMM, _brushSlider.MinValue, _brushSlider.MaxValue);
             _suppressCallbacks = false;
         }
+
+        /// <summary>
+        /// Podąża za zmianami zrobionymi w panelu na monitorze — obie warstwy opisują ten sam stan,
+        /// więc suwak przekroju w goglach nie może pokazywać czegoś innego niż suwak na ekranie.
+        /// </summary>
+        private void RefreshClipControls()
+        {
+            _suppressCallbacks = true;
+            if (_clipSlider != null)
+                _clipSlider.Value = Mathf.Clamp(session.ClipPlaneOffset, _clipSlider.MinValue, _clipSlider.MaxValue);
+            _suppressCallbacks = false;
+
+            SetLabel(_clipToggleButton, ClipLabel());
+            SetLabel(_clipAxisButton, ClipAxisLabel());
+        }
+
+        private string ClipLabel() => session.ClipPlaneEnabled ? "Przekrój: wł." : "Przekrój: wył.";
+
+        private string ClipAxisLabel() => "Oś: " + session.ClipPlaneAxis switch
+        {
+            0 => "lewo-prawo",
+            2 => "przód-tył",
+            _ => "góra-dół"
+        };
 
         private void Apply(Action change)
         {

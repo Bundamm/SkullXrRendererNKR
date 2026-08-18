@@ -55,7 +55,9 @@ namespace SkullXrRendererNKR.UI.Desktop
         private readonly List<Action> _presetUnsubscribers = new List<Action>();
         private DesktopUIFactory.SliderControl _windowCenter, _windowWidth, _surfaceThreshold;
         private DesktopUIFactory.SliderControl _visibleMaterialThreshold, _hueLow, _hueHigh;
-        private DesktopUIFactory.SegmentedControl _qualitySelector;
+        private DesktopUIFactory.SegmentedControl _qualitySelector, _clipAxisSelector;
+        private DesktopUIFactory.SliderControl _clipOffset;
+        private Toggle _clipEnabledToggle;
         private Toggle _emptySkipToggle;
 
         private DesktopUIFactory.SliderControl _morphThreshold, _morphErosion, _morphExpand;
@@ -239,6 +241,28 @@ namespace SkullXrRendererNKR.UI.Desktop
 
             DesktopUIFactory.CreateSeparator(page);
 
+            DesktopUIFactory.CreateSectionHeader(page, "Płaszczyzna przekroju");
+            DesktopUIFactory.CreateParagraph(page,
+                "Odcina widok, nie dane — nic nie trafia do kosza i nie trzeba tego cofać. " +
+                "W goglach płaszczyznę można też chwycić i obrócić dowolnie.");
+
+            _clipEnabledToggle = DesktopUIFactory.CreateToggle(page, "Włącz przekrój",
+                session.ClipPlaneEnabled, v => Apply(() => session.ClipPlaneEnabled = v));
+
+            _clipAxisSelector = DesktopUIFactory.CreateSegmented(page, "Oś cięcia",
+                new[] { "Lewo–prawo", "Góra–dół", "Przód–tył" },
+                session.ClipPlaneAxis,
+                i => Apply(() => session.ClipPlaneAxis = i));
+
+            _clipOffset = DesktopUIFactory.CreateSlider(page, "Położenie", -1f, 1f,
+                session.ClipPlaneOffset, v => Apply(() => session.ClipPlaneOffset = v), "0.00");
+
+            DesktopUIFactory.CreateButton(page, "Wyśrodkuj przekrój",
+                                          () => Apply(() => session.ClipPlaneOffset = 0f),
+                                          DesktopUIFactory.Palette.PanelAlt, 28f);
+
+            DesktopUIFactory.CreateSeparator(page);
+
             DesktopUIFactory.CreateSectionHeader(page, "Renderowanie");
 
             _surfaceThreshold = DesktopUIFactory.CreateSlider(page, "Próg trafienia powierzchni",
@@ -286,6 +310,9 @@ namespace SkullXrRendererNKR.UI.Desktop
             _hueHigh.SetValueWithoutNotify(session.VesselHueHigh);
             _qualitySelector?.SetIndexWithoutNotify(System.Array.IndexOf(QualityOrder, session.RaymarchQuality));
             if (_emptySkipToggle != null) _emptySkipToggle.SetIsOnWithoutNotify(session.EmptySpaceSkipping);
+            if (_clipEnabledToggle != null) _clipEnabledToggle.SetIsOnWithoutNotify(session.ClipPlaneEnabled);
+            _clipAxisSelector?.SetIndexWithoutNotify(session.ClipPlaneAxis);
+            _clipOffset?.SetValueWithoutNotify(session.ClipPlaneOffset);
             _suppressCallbacks = false;
 
             RefreshQualityHint();
