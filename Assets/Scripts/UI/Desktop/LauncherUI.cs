@@ -33,11 +33,15 @@ namespace SkullXrRendererNKR.UI.Desktop
         private TextMeshProUGUI _infoText;
         private Button _loadButton;
         private Button _browseButton;
+        private Button _upButton;
 
         private TextMeshProUGUI _stageText;
         private Image _progressFill;
 
         private string _selectedPath;
+        // Granica nawigacji wstecz i folder aktualnie oglądany — patrz BrowseAsync i GoUp.
+        private string _browseRoot;
+        private string _currentFolder;
         private CancellationTokenSource _inspectCts;
 
         private void Awake()
@@ -124,6 +128,16 @@ namespace SkullXrRendererNKR.UI.Desktop
             var browseRow = DesktopUIFactory.CreateRect(column, "BrowseRow");
             DesktopUIFactory.AddHorizontalLayout(browseRow.gameObject);
             DesktopUIFactory.SetHeight(browseRow.gameObject, DesktopUIFactory.RowHeight);
+
+            // Powrót do folderu nadrzędnego, ale NIE wyżej niż ten wskazany systemowym oknem
+            // (patrz BrowseAsync) — wybór foldera to decyzja, gdzie zaczynamy szukać, a wędrowanie
+            // stamtąd w górę zamieniłoby ekran startowy w drugą przeglądarkę plików.
+            _upButton = DesktopUIFactory.CreateButton(browseRow, "◄ Wyżej",
+                                                      () => GoUpAsync().Forget(),
+                                                      DesktopUIFactory.Palette.PanelAlt);
+            var upLayout = _upButton.gameObject.GetComponent<LayoutElement>();
+            upLayout.preferredWidth = 110f;
+            upLayout.flexibleWidth = 0f;
 
             _browseButton = DesktopUIFactory.CreateButton(browseRow, "Wybierz folder…",
                                                           () => BrowseAsync().Forget(),
@@ -268,7 +282,62 @@ namespace SkullXrRendererNKR.UI.Desktop
             string picked = await WindowsFolderPicker.PickFolderAsync("Wskaż folder z serią DICOM", start);
             if (string.IsNullOrEmpty(picked)) return; // anulowane
 
+            // Folder wskazany systemowym oknem staje się granicą nawigacji — powyżej niego przycisk
+            // wstecz nie wypuszcza. Wybór foldera to świadoma decyzja użytkownika, gdzie zaczyna
+            // szukać; wędrowanie stamtąd w górę zamieniłoby ekran startowy w drugą przeglądarkę plików.
+            _browseRoot = picked;
             await InspectAsync(picked);
+        }
+
+        /// <summary>
+        /// Wraca do folderu nadrzędnego względem oglądanego. Zatrzymuje się na folderze wskazanym
+        /// systemowym oknem — patrz komentarz przy przycisku.
+        /// </summary>
+        private async UniTaskVoid GoUpAsync()
+        {
+            string parent = ParentWithinRoot(_currentFolder);
+            if (parent == null) return;
+
+            await InspectAsync(parent);
+        }
+
+        /// <summary>
+        /// Folder nadrzędny, o ile mieści się w granicy nawigacji. Zwraca null, gdy jesteśmy już
+        /// w korzeniu, gdy korzeń nie został wyznaczony, albo gdy wyżej nie ma nic.
+        /// </summary>
+        private string ParentWithinRoot(string folder)
+        {
+            if (string.IsNullOrEmpty(folder) || string.IsNullOrEmpty(_browseRoot)) return null;
+            if (PathsEqual(folder, _browseRoot)) return null;
+
+            var parent = System.IO.Directory.GetParent(folder.TrimEnd('\\', '/'));
+            if (parent == null) return null;
+
+            // Poza korzeń nie wychodzimy nawet wtedy, gdy ścieżka nadrzędna istnieje.
+            string candidate = parent.FullName;
+            return IsWithin(candidate, _browseRoot) ? candidate : null;
+        }
+
+        private static bool PathsEqual(string a, string b) =>
+            string.Equals(System.IO.Path.GetFullPath(a).TrimEnd('\\', '/'),
+                          System.IO.Path.GetFullPath(b).TrimEnd('\\', '/'),
+                          System.StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Czy `path` to korzeń albo coś pod nim.</summary>
+        private static bool IsWithin(string path, string root)
+        {
+            if (PathsEqual(path, root)) return true;
+
+            string full = System.IO.Path.GetFullPath(path).TrimEnd('\\', '/');
+            string rootFull = System.IO.Path.GetFullPath(root).TrimEnd('\\', '/');
+            return full.StartsWith(rootFull + System.IO.Path.DirectorySeparatorChar,
+                                   System.StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RefreshUpButton()
+        {
+            if (_upButton == null) return;
+            _upButton.interactable = ParentWithinRoot(_currentFolder) != null;
         }
 
         private async UniTask InspectAsync(string path)
@@ -280,6 +349,11 @@ namespace SkullXrRendererNKR.UI.Desktop
             _inspectCts?.Cancel();
             _inspectCts?.Dispose();
             _inspectCts = new CancellationTokenSource();
+
+            _currentFolder = path;
+            // Wskazanie folderu z listy ostatnich albo wpisanie ścieżki też wyznacza granicę —
+            // inaczej przycisk „wyżej" byłby martwy wszędzie poza ścieżką przez systemowe okno.
+            if (string.IsNullOrEmpty(_browseRoot) || !IsWithin(path, _browseRoot)) _browseRoot = path;
 
             SetSelectedPath(null, "Sprawdzam folder…");
             if (_pathInput != null) _pathInput.SetTextWithoutNotify(path);
@@ -352,6 +426,8 @@ namespace SkullXrRendererNKR.UI.Desktop
             // Lista serii dotyczy KONKRETNEGO folderu studium — przy każdym innym wyborze musi
             // zniknąć, żeby nie sugerować, że należy do nowo wskazanego miejsca.
             if (_seriesListRoot != null) _seriesListRoot.SetActive(false);
+
+            RefreshUpButton();
         }
 
         private async UniTaskVoid LoadSelectedAsync()

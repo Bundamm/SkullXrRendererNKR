@@ -35,6 +35,17 @@ namespace SkullXrRendererNKR.App
         /// </summary>
         public List<ScanInfo> NestedSeries = new List<ScanInfo>();
 
+        /// <summary>
+        /// Polska odmiana słowa „seria" przez liczebnik: 2-4 → „serie", pozostałe → „serii”
+        /// (z wyjątkiem nastu: 12-14 to „serii”). Bez tego komunikat brzmiał „Zawiera 8 serie".
+        /// </summary>
+        private static string SeriesWord(int n)
+        {
+            int last = n % 10, lastTwo = n % 100;
+            bool few = last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14);
+            return few ? "serie" : "serii";
+        }
+
         public bool IsValid => SliceCount > 0 && string.IsNullOrEmpty(Error);
 
         /// <summary>Folder sam w sobie nie jest serią, ale zawiera serie do wyboru.</summary>
@@ -50,7 +61,7 @@ namespace SkullXrRendererNKR.App
                 if (HasNestedSeries)
                     return NestedSeries.Count == 1
                         ? "Zawiera 1 serię — wybierz ją poniżej."
-                        : $"Zawiera {NestedSeries.Count} serie do wyboru — wskaż jedną poniżej.";
+                        : $"Zawiera {NestedSeries.Count} {SeriesWord(NestedSeries.Count)} do wyboru — wskaż jedną poniżej.";
 
                 if (!IsValid) return Error ?? "Brak plików DICOM w tym folderze.";
 
