@@ -1,0 +1,139 @@
+#pragma kernel CSPaintOwnerBrush
+#pragma kernel CSClearOwner
+#pragma kernel CSTunnelOwner
+#pragma kernel CSStripOwner
+#pragma kernel CSSyncOwnerFromCpu
+
+// Docelowa maska WŁASNOŚCI (0 = główny wolumen, N = wydzielony obiekt albo kosz nr N), próbkowana
+// bezpośrednio w RaymarchCT / RaymarchCT_Simplified jako _OwnerTex. Zastępuje dawną binarną maskę
+// cięć (_CutsTex) — "wycięcie" to teraz tylko przypisanie własności do KOSZA CIĘTEGO OBIEKTU
+// (VolumeObjectManager.GetOrCreateCutBinFor), nie trwałe kasowanie; ten sam mechanizm co wydzielanie
+// fragmentów jako osobnych obiektów, patrz LoadDicomData.ExtractPickedIslandAsObject.
+RWTexture3D<float> _OwnerTexRW;
+
+int3 _VolumeDims;   // width, height, depth wolumenu (do przycinania na granicach)
+int3 _BrushMin;     // dolny róg bounding boxa pędzla (przestrzeń wokseli) — offset dyspozycji
+int3 _BrushCenter;  // środek pędzla (przestrzeń wokseli)
+int3 _BrushRadius;  // promień elipsoidy pędzla w wokselach (rx, ry, rz)
+
+// KAŻDY obiekt ma WŁASNY kosz (VolumeObjectManager.GetOrCreateCutBinFor) — nie ma już jednego
+// globalnego. Dlatego wszystkie trzy identyfikatory podaje wywołujący, zamiast zaszywać stałą:
+float _PaintOwnerNorm;   // docelowy właściciel/255 — kosz obiektu, który tniemy
+float _SourceOwnerNorm;  // właściciel/255 CIĘTEGO obiektu — strażnik: ruszamy WYŁĄCZNIE jego woksele
+float _CutBinOwnerNorm;  // kosz/255, z którego zabiera gumka
+float _RestoreOwnerNorm; // właściciel/255, do którego gumka przywraca (źródło danego kosza, nie zawsze 0)
+float _EraseMode;        // 0 = cięcie, 1 = gumka
+
+// Strażnik własności. Bez niego pociągnięcie pędzlem po wydzielonym kawałku zabierało do JEGO kosza
+// także woksele leżące w tym samym bounding boxie, ale należące do czaszki albo innego kawałka —
+// przy jednym wspólnym koszu było to niewidoczne, przy koszach per obiekt oznaczałoby ciche
+// okradanie sąsiadów. Cięcie obiektu X rusza teraz wyłącznie woksele, które faktycznie należą do X.
+bool OwnedBySource(int3 voxel)
+{
+    return abs(_OwnerTexRW[voxel] - _SourceOwnerNorm) < 0.001;
+}
+
+// Grupa 4x4x4 = 64 wątki. Dispatch jest liczony tylko na bounding box pędzla
+// (zwykle kilkanaście-kilkadziesiąt wokseli w każdą stronę), NIE na cały wolumen —
+// dzięki temu koszt skaluje się z rozmiarem pędzla, a nie rozmiarem skanu CT.
+[numthreads(4,4,4)]
+void CSPaintOwnerBrush(uint3 id : SV_DispatchThreadID)
+{
+    int3 voxel = _BrushMin + int3(id);
+
+    if (any(voxel < int3(0, 0, 0)) || any(voxel >= _VolumeDims))
+        return;
+
+    int3 d = voxel - _BrushCenter;
+    float3 r = max(float3(_BrushRadius), 0.0001);
+    float3 n = float3(d) / r;
+
+    // Równanie elipsoidy — identyczne z VolumePicker.ApplyBrushAt (CPU),
+    // żeby maska GPU i maska CPU (pieceOwnerMask, źródło prawdy dla segmentacji) się nie rozjechały.
+    if (dot(n, n) <= 1.0)
+    {
+        if (_EraseMode > 0.5)
+        {
+            float cur = _OwnerTexRW[voxel];
+            if (abs(cur - _CutBinOwnerNorm) < 0.001)
+                _OwnerTexRW[voxel] = _RestoreOwnerNorm;
+        }
+        else if (OwnedBySource(voxel))
+        {
+            _OwnerTexRW[voxel] = _PaintOwnerNorm;
+        }
+    }
+}
+
+// Jednorazowe zerowanie CAŁEGO wolumenu przy starcie (Graphics.SetRenderTarget+GL.Clear
+// na Texture3D czyści tylko pojedynczy wycinek Z, więc robimy to jawnie przez compute —
+// jedyny pewny sposób działający tak samo na D3D11 desktop i D3D11 UWP/HoloLens 2).
+[numthreads(4,4,4)]
+void CSClearOwner(uint3 id : SV_DispatchThreadID)
+{
+    if (any(int3(id) >= _VolumeDims)) return;
+    _OwnerTexRW[id] = 0;
+}
+
+// TunnelCut: przypisuje własność Kosza "na wylot" wzdłuż odcinka _TunnelStart->_TunnelEnd
+// (przestrzeń wokseli), promień _TunnelRadius (test odległości punkt-odcinek). Dispatch obejmuje
+// tylko bounding box odcinka (+ promień), NIE cały wolumen — offset w _TunnelBoundsMin, tak jak
+// przy CSPaintOwnerBrush. TunnelCut nie ma trybu gumki (zawsze nadpisuje).
+float3 _TunnelStart;
+float3 _TunnelEnd;
+float  _TunnelRadius;
+int3   _TunnelBoundsMin;
+
+[numthreads(4,4,4)]
+void CSTunnelOwner(uint3 id : SV_DispatchThreadID)
+{
+    int3 voxel = _TunnelBoundsMin + int3(id);
+    if (any(voxel < int3(0, 0, 0)) || any(voxel >= _VolumeDims)) return;
+
+    float3 p = float3(voxel) + 0.5;
+    float3 seg = _TunnelEnd - _TunnelStart;
+    float segLenSq = max(dot(seg, seg), 1e-5);
+    float t = saturate(dot(p - _TunnelStart, seg) / segLenSq);
+    float3 closest = _TunnelStart + seg * t;
+
+    if (distance(p, closest) <= _TunnelRadius && OwnedBySource(voxel))
+    {
+        _OwnerTexRW[voxel] = _PaintOwnerNorm;
+    }
+}
+
+// Auto-Strip: przypisuje własność Kosza (natychmiast widoczne w _OwnerTex) wszystkiemu poniżej
+// progu HU — odczytuje bezpośrednio _VolumeTex (tę samą teksturę co shader raymarchingu,
+// znormalizowaną 0..1), więc próg też podajemy znormalizowany (patrz LoadDicomData.
+// StripOwnerGPU). Bez tego dispatchu zmiana w pieceOwnerMask (CPU) jest poprawna, ale
+// NIEWIDOCZNA — _MaskTex aktualizuje się dopiero po wolnej pełnej segmentacji.
+Texture3D<float> _VolumeTexRO;
+float _StripThresholdNorm;
+
+[numthreads(4,4,4)]
+void CSStripOwner(uint3 id : SV_DispatchThreadID)
+{
+    if (any(int3(id) >= _VolumeDims)) return;
+
+    float v = _VolumeTexRO.Load(int4(id, 0)).r;
+    if (v < _StripThresholdNorm && OwnedBySource(int3(id)))
+    {
+        _OwnerTexRW[id] = _PaintOwnerNorm;
+    }
+}
+
+// Generyczne: synchronizuje CAŁĄ teksturę _OwnerTexRW WPROST z aktualnym CPU-owym pieceOwnerMask
+// (zbudowanym jako tymczasowy _SourceOwnerTex) — używane przez WSZYSTKIE masowe, rzadkie zmiany
+// własności (RemoveConnectedObjectAt, Sweep, ExtractPickedIslandAsObject, Reset Cuts), gdzie CPU
+// jest źródłem prawdy i mutuje dowolne, nieciągłe zbiory wokseli naraz. Pełnowolumenowy dispatch —
+// akceptowalne, bo to rzadka, wywoływana na żądanie operacja, nie coś per-klatka (w przeciwieństwie
+// do CSPaintOwnerBrush/CSTunnelOwner, ograniczonych do bounding boxa).
+Texture3D<float> _SourceOwnerTex;
+
+[numthreads(4,4,4)]
+void CSSyncOwnerFromCpu(uint3 id : SV_DispatchThreadID)
+{
+    if (any(int3(id) >= _VolumeDims)) return;
+
+    _OwnerTexRW[id] = _SourceOwnerTex.Load(int4(id, 0)).r;
+}

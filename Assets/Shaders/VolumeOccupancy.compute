@@ -1,0 +1,125 @@
+#pragma kernel CSBuildOccupancy
+#pragma kernel CSBuildOwnerOccupancy
+#pragma kernel CSDilateOccupancy
+
+// Zgrubna mapa ZAJĘTOŚCI wolumenu: każdy teksel odpowiada blokowi OCCUPANCY_BLOCK^3 wokseli
+// oryginalnej tekstury i trzyma MAKSYMALNĄ gęstość w tym bloku. Raymarching używa jej do
+// przeskakiwania pustki jednym dużym krokiem zamiast maszerowania przez powietrze po _StepSize —
+// w skanie CT ogromna większość objętości to powietrze (-1000 HU), więc dotąd większość z ~2048
+// kroków na piksel kosztowała 4 pobrania tekstury, nie dając absolutnie nic.
+//
+// MAKSIMUM (nie średnia) jest tu kluczowe: mapa musi być KONSERWATYWNA. Blok wolno pominąć tylko
+// wtedy, gdy NIC w nim nie może być widoczne — gdyby trzymać średnią, pojedyncze cienkie naczynie
+// w pustym bloku uśredniłoby się do zera i zniknęłoby z obrazu.
+//
+// Rozmiar bloku 8 daje mapę 512x mniejszą od wolumenu (przy 512x512x400 to ~25 KB) — koszt pamięci
+// pomijalny, a jeden teksel pozwala przeskoczyć do 8 wokseli naraz.
+#define OCCUPANCY_BLOCK 8
+
+Texture3D<float> _VolumeTexRO;      // gęstość znormalizowana 0..1 (to samo źródło co raymarching)
+RWTexture3D<float> _OccupancyTexRW; // wynik: maksimum na blok
+
+int3 _VolumeDims;     // pełne wymiary wolumenu
+int3 _OccupancyDims;  // wymiary mapy zajętości = ceil(_VolumeDims / OCCUPANCY_BLOCK)
+
+// Zakres wokseli należący do danego teksela mapy — liczony DOKŁADNIE tą samą regułą, którą posłuży
+// się sampler w raymarchingu (teksel id pokrywa uvw od id/_OccupancyDims do (id+1)/_OccupancyDims,
+// a woksel v leży w uvw (v+0.5)/_VolumeDims). Naiwne "blok = id*8" zgadza się z tym TYLKO wtedy, gdy
+// wymiar dzieli się przez 8 — przy typowym skanie (np. 361 warstw) podziały się rozjeżdżają i mapa
+// opisuje inne woksele, niż potem czyta shader, co objawia się prostokątnymi dziurami w modelu.
+//
+// Margines 1 woksela w każdą stronę czyni mapę świadomie NADMIAROWĄ. Kosztuje odrobinę mniej
+// przeskoków, ale zabezpiecza przed dwiema rzeczami naraz: resztkami zaokrągleń na granicach bloków
+// oraz dwuliniową interpolacją tekstury gęstości, przez którą próbka tuż przy ścianie bloku bierze
+// wartość częściowo z bloku sąsiedniego.
+void VoxelRangeForTexel(uint3 id, out int3 lo, out int3 hi)
+{
+    float3 fdim = float3(_VolumeDims);
+    float3 focc = float3(_OccupancyDims);
+    lo = max((int3)floor(float3(id)       * fdim / focc) - 1, int3(0, 0, 0));
+    hi = min((int3)ceil ((float3(id) + 1) * fdim / focc) + 1, _VolumeDims);
+}
+
+[numthreads(4,4,4)]
+void CSBuildOccupancy(uint3 id : SV_DispatchThreadID)
+{
+    if (any(int3(id) >= _OccupancyDims)) return;
+
+    int3 lo, hi;
+    VoxelRangeForTexel(id, lo, hi);
+
+    float maxDensity = 0.0;
+    for (int z = lo.z; z < hi.z; z++)
+        for (int y = lo.y; y < hi.y; y++)
+            for (int x = lo.x; x < hi.x; x++)
+                maxDensity = max(maxDensity, _VolumeTexRO.Load(int4(x, y, z, 0)).r);
+
+    _OccupancyTexRW[id] = maxDensity;
+}
+
+// Mapa zajętości KONKRETNEGO właściciela: 1 gdy blok zawiera choć jeden woksel należący do
+// _TargetOwnerNorm i jednocześnie dość gęsty, żeby cokolwiek narysować; 0 w przeciwnym razie.
+//
+// Po co osobno od CSBuildOccupancy: mapa czysto gęstościowa nie wie nic o własności, więc dla Kosza
+// (pudło CAŁEGO wolumenu o rzadkiej zawartości) każdy blok zajmowany przez czaszkę wyglądał na
+// "zajęty". Promień Kosza maszerował więc pełnym krokiem przez całą gęstą czaszkę, odrzucając
+// niemal każdą próbkę po właścicielu — czyli akurat tam, gdzie przeskakiwanie było najbardziej
+// potrzebne, nie dawało nic. To jest przyczyna drastycznego spadku FPS po pokazaniu Kosza.
+Texture3D<float> _OwnerTexRO;
+float _TargetOwnerNorm;  // szukany właściciel/255
+float _SkipDensity;      // próg gęstości, poniżej którego woksel i tak jest niewidoczny
+
+[numthreads(4,4,4)]
+void CSBuildOwnerOccupancy(uint3 id : SV_DispatchThreadID)
+{
+    if (any(int3(id) >= _OccupancyDims)) return;
+
+    int3 lo, hi;
+    VoxelRangeForTexel(id, lo, hi);
+
+    float occupied = 0.0;
+
+    for (int z = lo.z; z < hi.z && occupied == 0.0; z++)
+        for (int y = lo.y; y < hi.y && occupied == 0.0; y++)
+            for (int x = lo.x; x < hi.x && occupied == 0.0; x++)
+            {
+                float owner = _OwnerTexRO.Load(int4(x, y, z, 0)).r;
+                if (abs(owner - _TargetOwnerNorm) < 0.001 &&
+                    _VolumeTexRO.Load(int4(x, y, z, 0)).r >= _SkipDensity)
+                {
+                    occupied = 1.0;
+                }
+            }
+
+    _OccupancyTexRW[id] = occupied;
+}
+
+// Rozszerza mapę o JEDNĄ KOMÓRKĘ we wszystkich kierunkach (maksimum po sąsiedztwie 3x3x3).
+// Po tym przebiegu komórka jest pusta wyłącznie wtedy, gdy pusta jest ona ORAZ wszystkie 26
+// sąsiednich — czyli między dowolnym materiałem a komórką uznaną za pustą leży zawsze co najmniej
+// jedna komórka zapasu.
+//
+// Po co, skoro budowa i tak jest konserwatywna co do wokseli: to zabezpieczenie STRUKTURALNE, nie
+// kolejna poprawka odwzorowania. Mapa zajętości jest ZAPISYWANA przez ten compute, a CZYTANA przez
+// sampler w raymarchingu — dwie różne reguły przeliczania współrzędnych, które muszą zgadzać się
+// idealnie, inaczej promień pomija bloki z materiałem (prostokątne dziury). Halo o szerokości
+// komórki sprawia, że dowolne rozjechanie się tych reguł MNIEJSZE NIŻ KOMÓRKA przestaje mieć
+// znaczenie. Kosztuje trochę mniej przeskoków; poprawność jest ważniejsza.
+Texture3D<float> _OccupancySrc;
+
+[numthreads(4,4,4)]
+void CSDilateOccupancy(uint3 id : SV_DispatchThreadID)
+{
+    if (any(int3(id) >= _OccupancyDims)) return;
+
+    float m = 0.0;
+    for (int dz = -1; dz <= 1; dz++)
+        for (int dy = -1; dy <= 1; dy++)
+            for (int dx = -1; dx <= 1; dx++)
+            {
+                int3 p = clamp(int3(id) + int3(dx, dy, dz), int3(0, 0, 0), _OccupancyDims - 1);
+                m = max(m, _OccupancySrc.Load(int4(p, 0)).r);
+            }
+
+    _OccupancyTexRW[id] = m;
+}
