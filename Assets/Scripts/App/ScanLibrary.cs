@@ -35,17 +35,6 @@ namespace SkullXrRendererNKR.App
         /// </summary>
         public List<ScanInfo> NestedSeries = new List<ScanInfo>();
 
-        /// <summary>
-        /// Polska odmiana słowa „seria" przez liczebnik: 2-4 → „serie", pozostałe → „serii”
-        /// (z wyjątkiem nastu: 12-14 to „serii”). Bez tego komunikat brzmiał „Zawiera 8 serie".
-        /// </summary>
-        private static string SeriesWord(int n)
-        {
-            int last = n % 10, lastTwo = n % 100;
-            bool few = last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14);
-            return few ? "serie" : "serii";
-        }
-
         public bool IsValid => SliceCount > 0 && string.IsNullOrEmpty(Error);
 
         /// <summary>Folder sam w sobie nie jest serią, ale zawiera serie do wyboru.</summary>
@@ -60,12 +49,12 @@ namespace SkullXrRendererNKR.App
             {
                 if (HasNestedSeries)
                     return NestedSeries.Count == 1
-                        ? "Zawiera 1 serię — wybierz ją poniżej."
-                        : $"Zawiera {NestedSeries.Count} {SeriesWord(NestedSeries.Count)} do wyboru — wskaż jedną poniżej.";
+                        ? "Contains 1 series. Choose it below."
+                        : $"Contains {NestedSeries.Count} series. Choose one below.";
 
-                if (!IsValid) return Error ?? "Brak plików DICOM w tym folderze.";
+                if (!IsValid) return Error ?? "No DICOM files in this folder.";
 
-                var parts = new List<string> { $"{SliceCount} plastrów", $"{Width}×{Height}" };
+                var parts = new List<string> { $"{SliceCount} slices", $"{Width}×{Height}" };
                 if (!string.IsNullOrWhiteSpace(Modality)) parts.Add(Modality);
                 if (!string.IsNullOrWhiteSpace(SeriesDescription)) parts.Add(SeriesDescription);
                 else if (!string.IsNullOrWhiteSpace(StudyDescription)) parts.Add(StudyDescription);
@@ -97,7 +86,7 @@ namespace SkullXrRendererNKR.App
 
             if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
             {
-                info.Error = "Taki folder nie istnieje.";
+                info.Error = "This folder does not exist.";
                 return info;
             }
 
@@ -108,13 +97,13 @@ namespace SkullXrRendererNKR.App
             }
             catch (System.Exception ex)
             {
-                info.Error = "Nie udało się odczytać folderu: " + ex.Message;
+                info.Error = "Could not read the folder: " + ex.Message;
                 return info;
             }
 
             if (files.Length == 0)
             {
-                info.Error = "Folder jest pusty.";
+                info.Error = "The folder is empty.";
                 return info;
             }
 
@@ -158,7 +147,7 @@ namespace SkullXrRendererNKR.App
                 // poziomie widać, z czego w ogóle jest wybór.
                 info.NestedSeries = await FindSeriesInSubfoldersAsync(folderPath, ct);
                 if (info.NestedSeries.Count == 0)
-                    info.Error = "W tym folderze ani w jego podfolderach nie ma plików DICOM.";
+                    info.Error = "No DICOM files in this folder or its subfolders.";
                 return info;
             }
 
@@ -176,7 +165,7 @@ namespace SkullXrRendererNKR.App
             {
                 // Pliki są, ale nie dają się odczytać — lepiej powiedzieć to teraz niż w połowie
                 // wczytywania wolumenu.
-                info.Error = "Nie udało się odczytać nagłówka serii: " + ex.Message;
+                info.Error = "Could not read the series header: " + ex.Message;
             }
 
             return info;

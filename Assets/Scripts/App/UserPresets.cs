@@ -95,20 +95,6 @@ namespace SkullXrRendererNKR.App
             }
         }
 
-        public bool TryGet(string name, out Preset preset)
-        {
-            foreach (var p in All)
-            {
-                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
-                {
-                    preset = p;
-                    return true;
-                }
-            }
-            preset = default;
-            return false;
-        }
-
         /// <summary>
         /// Zapisuje preset pod podaną nazwą, nadpisując wpis o tej samej nazwie. Nazwa jest
         /// oczyszczana ze znaków rozdzielających, bo trafia do tego samego ciągu co dane —

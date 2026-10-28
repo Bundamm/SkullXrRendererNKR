@@ -31,7 +31,7 @@ namespace Helpers
         public bool Visible = true;
         // Gdy true, VolumePicker.Update() trzyma Manipulator+BoundsControl TEGO targetu wyłączone,
         // niezależnie od trybu/Visible — używane przez Kosz w trybie "nałożony na czaszkę"
-        // (SetCutBinAlignedToSkull), żeby nie miał WŁASNEGO, nakładającego się na czaszkę uchwytu —
+        // (SetBinAligned), żeby nie miał WŁASNEGO, nakładającego się na czaszkę uchwytu —
         // porusza/obraca się wtedy WYŁĄCZNIE przez uchwyt czaszki (jest jej dzieckiem w hierarchii).
         public bool SuppressOwnHandle;
         // Czy ten obiekt jest koszem (celem cięć) — i czyim. Kosz nie jest osobną kategorią w masce
@@ -44,12 +44,12 @@ namespace Helpers
         // zajmującej te same bloki — patrz LoadDicomData.RebuildOwnerOccupancy.
         public RenderTexture Occupancy;
         // Miejsce "spoczynkowe" obok źródła — zapamiętane, żeby dało się wrócić po nałożeniu kosza
-        // na jego obiekt źródłowy (SetCutBinAlignedToSkull).
+        // na jego obiekt źródłowy (SetBinAligned).
         public Vector3 RestPosition;
         public Quaternion RestRotation;
         public Vector3 RestScale;
         // Stały, policzony raz przy wydzieleniu obiektu podzbiór lokalnej przestrzeni -0.5..0.5
-        // ORYGINALNEGO VolumeCube — patrz komentarz przy _SubLocalCenter/_SubLocalSize w RaymarchCT.shader.
+        // ORYGINALNEGO VolumeCube — patrz komentarz przy _SubLocalCenter/_SubLocalSize w RaymarchCT_Simplified.shader.
         public Vector3 SubLocalCenter;
         public Vector3 SubLocalSize;
     }
@@ -158,7 +158,7 @@ namespace Helpers
             Vector3 restPosition = srcT.position - srcT.right * (halfExtent * 2f + halfExtent * 0.6f);
 
             var bin = SpawnPieceObject(binId, source.SubLocalCenter, source.SubLocalSize,
-                restPosition, srcT.rotation, srcT.lossyScale, $"Kosz: {source.DisplayName}");
+                restPosition, srcT.rotation, srcT.lossyScale, $"Bin: {source.DisplayName}");
             if (bin == null) return null;
 
             bin.IsCutBin = true;
@@ -167,7 +167,7 @@ namespace Helpers
             bin.RestRotation = srcT.rotation;
             bin.RestScale = srcT.lossyScale;
 
-            // Kosz bywa świadomie nakładany DOKŁADNIE na swoje źródło (SetCutBinAlignedToSkull) —
+            // Kosz bywa świadomie nakładany DOKŁADNIE na swoje źródło (SetBinAligned) —
             // dwa idealnie pokrywające się, półprzezroczyste wolumeny o tym samym środku bryły sortują
             // się niedeterministycznie, więc wymuszamy stałą, przewidywalną kolejność rysowania.
             bin.Material.renderQueue = _dicomData.InstancedMaterial.renderQueue + 1;
@@ -180,18 +180,6 @@ namespace Helpers
 
             Debug.Log($"[VolumeObjectManager] Utworzono kosz '{bin.DisplayName}' (OwnerId {binId}) dla obiektu '{source.DisplayName}' (OwnerId {sourceOwnerId}).");
             return bin;
-        }
-
-        /// <summary>
-        /// OwnerId kosza danego obiektu (tworząc kosz przy pierwszym użyciu) — wygodne dla ścieżek
-        /// cięcia, które potrzebują tylko numeru do wpisania w maskę własności. Zwraca sourceOwnerId
-        /// (czyli "nic nie rób"), jeśli kosza nie da się utworzyć — dzięki temu cięcie nie kasuje
-        /// wtedy materiału po cichu, tylko po prostu nie robi nic.
-        /// </summary>
-        public byte GetCutBinOwnerFor(byte sourceOwnerId)
-        {
-            var bin = GetOrCreateCutBinFor(sourceOwnerId);
-            return bin != null ? bin.OwnerId : sourceOwnerId;
         }
 
         /// <summary>
@@ -246,7 +234,7 @@ namespace Helpers
             var mainTarget = FindTarget(0);
             if (mainTarget == null)
             {
-                mainTarget = new VolumeRenderTarget { OwnerId = 0, DisplayName = "Czaszka" };
+                mainTarget = new VolumeRenderTarget { OwnerId = 0, DisplayName = "Skull" };
                 _targets.Add(mainTarget);
             }
 
@@ -278,7 +266,7 @@ namespace Helpers
 
         /// <summary>
         /// Wyłącza na klonie materiału stary, GLOBALNY mechanizm podglądu izolacji (_MaskIDToKeep i
-        /// spółka — patrz Morphology Mask w RaymarchCT.shader) — wydzielone obiekty/Kosz używają
+        /// spółka — patrz Morphology Mask w RaymarchCT_Simplified.shader) — wydzielone obiekty/Kosz używają
         /// WYŁĄCZNIE własności (_OwnerFilterID) do decydowania co pokazać, więc ten mechanizm im
         /// niepotrzebny. KRYTYCZNE, żeby to jawnie wyzerować, nie polegać na tym co akurat
         /// Instantiate(_dicomData.InstancedMaterial) odziedziczy: główny materiał ma te wartości
@@ -462,12 +450,6 @@ namespace Helpers
 
         /// <summary>Czy dany kosz jest aktualnie "nałożony" na swój obiekt źródłowy.</summary>
         public bool IsBinAligned(VolumeRenderTarget bin) => bin != null && bin.SuppressOwnHandle;
-
-        /// <summary>Skrót zgodny z dawnym API — dotyczy kosza GŁÓWNEJ czaszki.</summary>
-        public bool IsCutBinAlignedToSkull => IsBinAligned(CutBin);
-
-        /// <summary>Skrót zgodny z dawnym API — nakłada/odsuwa kosz głównej czaszki.</summary>
-        public void SetCutBinAlignedToSkull(bool align) => SetBinAligned(CutBin, align);
 
         /// <summary>
         /// "Nakłada" kosz DOKŁADNIE na jego obiekt źródłowy (żeby zobaczyć, SKĄD dokładnie co zostało

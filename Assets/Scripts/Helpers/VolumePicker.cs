@@ -67,6 +67,12 @@ namespace Helpers
 
         private float _lastTunnelCutTime = -999f;
 
+        /// <summary>
+        /// Wynik kliknięcia narzędziem Diagn., gotowy do pokazania w panelu operatora. Do tej pory
+        /// trafiał wyłącznie do konsoli, której w zbudowanej aplikacji w ogóle nie widać.
+        /// </summary>
+        public event System.Action<string> OnInspectReport;
+
         private float _lastBrushTime = 0f;
         private bool _needsMorphologyUpdate = false;
 
@@ -178,8 +184,8 @@ namespace Helpers
             for (int i = 0; i < targets.Count; i++)
             {
                 var target = targets[i];
-                // SuppressOwnHandle: Kosz "nałożony" na czaszkę (VolumeObjectManager.
-                // SetCutBinAlignedToSkull) jest sparentowany pod nią i porusza/obraca się WYŁĄCZNIE
+                // SuppressOwnHandle: Kosz "nałożony" na swój obiekt (VolumeObjectManager.
+                // SetBinAligned) jest sparentowany pod nią i porusza/obraca się WYŁĄCZNIE
                 // przez jej własny uchwyt — własny Manipulator/BoundsControl Kosza musi zostać
                 // wyłączony, inaczej dwa nakładające się na siebie uchwyty myliłyby użytkownika.
                 bool manipEnabled = isPicker && target.Visible && !target.SuppressOwnHandle;
@@ -596,6 +602,7 @@ namespace Helpers
                 else
                 {
                     Debug.LogWarning("[VolumePicker][Inspect] Promień NIE trafił w żaden zarejestrowany (i widoczny) obiekt wolumetryczny.");
+                    OnInspectReport?.Invoke("The cursor was not over any visible object.");
                 }
             }
             else if (CurrentMode == ToolMode.TunnelCut)
@@ -780,7 +787,7 @@ namespace Helpers
                 // Krok domyka Update, gdy pędzel przestaje być trzymany.
                 if (!_strokeOpen)
                 {
-                    _dicomData.EditHistory.Begin(erase ? "Przywrócenie pędzlem" : "Cięcie pędzlem");
+                    _dicomData.EditHistory.Begin(erase ? "Restore brush" : "Cut brush");
                     _strokeOpen = true;
                 }
 
@@ -939,7 +946,7 @@ namespace Helpers
             int modifiedCount = 0;
             // Tunel to jedno kliknięcie = jeden krok, więc granice kroku są tu jednoznaczne (inaczej
             // niż przy ciągłym pociągnięciu pędzlem, gdzie krok domyka dopiero puszczenie przycisku).
-            _dicomData.EditHistory.Begin("Przewiercenie tunelu");
+            _dicomData.EditHistory.Begin("Tunnel");
 
             await Cysharp.Threading.Tasks.UniTask.RunOnThreadPool(() =>
             {
@@ -1130,24 +1137,31 @@ namespace Helpers
             if (scan == null)
             {
                 Debug.LogWarning("[VolumePicker][Inspect] Promień NIE przecina bryły celowanego obiektu.");
+                OnInspectReport?.Invoke($"The ray does not cross the volume of {target.DisplayName}.");
                 return;
             }
 
             Debug.Log($"[VolumePicker][Inspect] Obiekt: {target.DisplayName}. MAX HU wzdłuż CAŁEGO promienia = {scan.MaxHU} przy wokselu {scan.MaxHuVoxel} " +
                 $"(t={scan.MaxHuT:F3} z zakresu [{scan.TMin:F3}-{scan.TMax:F3}]). To pokazuje czy JAKIEKOLWIEK realne ciało leży na tej linii wzroku, niezależnie od progów.");
 
-            LogThresholdHit("Cut Threshold HU", CutThresholdHU, scan);
-            LogThresholdHit("Auto Strip Threshold HU", _dicomData.VisibleMaterialThresholdHU, scan);
-            LogThresholdHit("Morph Threshold HU", _dicomData.morphThresholdHU, scan);
+            // Ten sam wynik co w konsoli, ale z nazwami progów z panelu — operator nie musi wiedzieć,
+            // jak nazywają się pola w kodzie.
+            var report = new System.Text.StringBuilder();
+            report.Append($"<b>{target.DisplayName}</b>\nMax density along the ray: {scan.MaxHU} HU");
+            report.Append('\n').Append(LogThresholdHit("Cut Threshold HU", "Cut threshold", CutThresholdHU, scan));
+            report.Append('\n').Append(LogThresholdHit("Auto Strip Threshold HU", "Visible material", _dicomData.VisibleMaterialThresholdHU, scan));
+            report.Append('\n').Append(LogThresholdHit("Morph Threshold HU", "Bone threshold", _dicomData.morphThresholdHU, scan));
+            OnInspectReport?.Invoke(report.ToString());
         }
 
-        private void LogThresholdHit(string label, float threshold, RayScanResult scan)
+        /// <summary>Loguje pierwsze trafienie powyżej progu i zwraca jego opis dla panelu operatora.</summary>
+        private string LogThresholdHit(string label, string uiLabel, float threshold, RayScanResult scan)
         {
             Vector3Int? hit = scan.FirstVoxelAbove(threshold);
             if (!hit.HasValue)
             {
                 Debug.Log($"[VolumePicker][Inspect] {label}={threshold}: NIC na tej linii wzroku nie przekracza tego progu.");
-                return;
+                return $"{uiLabel} ({threshold:0} HU): nothing above it";
             }
             int index = VolumeSpaceTransform.GetFlatIndex(hit.Value, _dicomData.Width, _dicomData.Height);
             short hu = _dicomData.VolumeHu[index];
@@ -1156,6 +1170,10 @@ namespace Helpers
             // wydzielony kawałek...), patrz VolumeObjectManager.GetOrCreateCutBinFor.
             byte owner = _dicomData.pieceOwnerMask.IsCreated ? _dicomData.pieceOwnerMask[index] : (byte)0;
             Debug.Log($"[VolumePicker][Inspect] {label}={threshold}: pierwsze trafienie woksel {hit.Value}, HU={hu}, etykieta wyspy={islandLabel}, właściciel={owner}");
+
+            string ownerName = _objectManager != null ? _objectManager.FindTarget(owner)?.DisplayName : null;
+            return $"{uiLabel} ({threshold:0} HU): hit {hu} HU, island ID {islandLabel}, " +
+                   $"object: {ownerName ?? owner.ToString()}";
         }
 
         private class RayScanResult
@@ -1241,7 +1259,7 @@ namespace Helpers
         /// <summary>
         /// Sprawdza czy dany woksel byłby widoczny na ekranie przy aktualnych ustawieniach maski
         /// morfologicznej — DOKŁADNIE ta sama logika co blok "MORPHOLOGY MASK" w shaderze
-        /// (RaymarchCT_Simplified.shader / RaymarchCT.shader). Musi być trzymana w synchronizacji
+        /// (RaymarchCT_Simplified.shader). Musi być trzymana w synchronizacji
         /// z tamtą logiką ręcznie, bo shader HLSL i ten kod C# to dwie oddzielne implementacje.
         /// Globalne (nie per-target) — mechanizm podglądu Pick/RemoveIsland jest jeden, wspólny dla
         /// całej sceny, niezależnie od tego, na który obiekt aktualnie celujesz.

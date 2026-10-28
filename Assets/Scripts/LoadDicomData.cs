@@ -150,6 +150,86 @@ public class LoadDicomData : MonoBehaviour
     // czasem trafiał w taką drobinę szumu zamiast w prawdziwe akcesorium (np. maseczkę) pod spodem.
     private int[] _maskLabelSizes;
     public int GetMaskLabelSize(byte label) => (_maskLabelSizes != null && label < _maskLabelSizes.Length) ? _maskLabelSizes[label] : 0;
+
+    /// <summary>Czy aktualna izolacja to doraźnie wskazane akcesorium (a nie wyspa z segmentacji).</summary>
+    public bool IsAccessoryPreviewIsolated => morphMaskToKeep == AccessoryPreviewLabel;
+
+    /// <summary>
+    /// Rośnie, gdy zmienia się numeracja wysp (wynik segmentacji albo jej skasowanie) — pozwala UI
+    /// zauważyć nowe ID. Celowo nie _morphologyGeneration: ten rośnie na STARCIE liczenia, gdy
+    /// rozmiary wysp są jeszcze stare.
+    /// </summary>
+    public int MaskLabelsVersion { get; private set; }
+
+    // Powód, dla którego ostatnia operacja na wskazanej strukturze NIC nie zrobiła. Dotąd trafiał
+    // wyłącznie do konsoli, więc w panelu wyglądało to tak, jakby przycisk po prostu nie działał.
+    private string _operationNotice;
+
+    /// <summary>Zwraca i czyści komunikat o odmowie ostatniej operacji (null = operacja się wykonała).</summary>
+    public string TakeOperationNotice()
+    {
+        string notice = _operationNotice;
+        _operationNotice = null;
+        return notice;
+    }
+
+    /// <summary>
+    /// Wyłącza izolację wskazanej struktury: na modelu znów widać całą warstwę. Dotąd jedyną drogą
+    /// powrotu było „Cofnij wszystkie cięcia” albo pole w Inspektorze — w panelu nie było nic.
+    /// </summary>
+    public void ShowWholeVolume()
+    {
+        // Trwające liczenie Pickera skończyłoby się ponownym ustawieniem izolacji zaraz po tym kliknięciu.
+        _pickCts?.Cancel();
+        morphPickedVoxel = null;
+        morphPickedVoxelOwnerId = 0;
+        morphMaskToKeep = 0;
+        morphNegateMask = false;
+    }
+
+    /// <summary>
+    /// Izoluje wyspę o podanym ID (numeracja jak w podsumowaniu segmentacji: 1 = największa) na
+    /// głównym obiekcie i ustawia ją jako wskazaną — żeby dało się ją od razu odłożyć albo schować,
+    /// tak samo jak po kliknięciu Pickerem. Zwraca false, gdy takiej wyspy nie ma.
+    /// </summary>
+    public async UniTask<bool> IsolateIslandAsync(byte label)
+    {
+        if (label == 0 || label == AccessoryPreviewLabel || !maskLabels.IsCreated || !pieceOwnerMask.IsCreated) return false;
+
+        _pickCts?.Cancel();
+        int generation = _morphologyGeneration;
+        var labels = maskLabels;
+        var owners = pieceOwnerMask;
+        int found = await UniTask.RunOnThreadPool(() =>
+        {
+            for (int i = 0; i < labels.Length; i++)
+                if (labels[i] == label && owners[i] == 0) return i;
+            return -1;
+        });
+        // Przeliczenie w trakcie szukania zmieniło numerację — znaleziony woksel mógłby należeć do innej wyspy.
+        if (found < 0 || generation != _morphologyGeneration) return false;
+
+        int slice = _width * _height;
+        morphPickedVoxel = new Vector3Int(found % _width, (found % slice) / _width, found / slice);
+        morphPickedVoxelOwnerId = 0;
+        morphMaskToKeep = label;
+        morphNegateMask = false;
+        return true;
+    }
+
+    /// <summary>
+    /// Rozmiar (w wokselach) struktury wskazanej Pickerem, albo 0, gdy nie da się go podać: nic nie
+    /// jest wskazane, albo wskazanie to doraźnie wyizolowane akcesorium (AccessoryPreviewLabel) —
+    /// jego rozmiar nie trafia do _maskLabelSizes, więc odczyt stamtąd byłby nieaktualny.
+    /// </summary>
+    public int GetPickedIslandVoxelCount()
+    {
+        if (!morphPickedVoxel.HasValue || !maskLabels.IsCreated) return 0;
+        int index = VolumeSpaceTransform.GetFlatIndex(morphPickedVoxel.Value, _width, _height);
+        if (index < 0 || index >= maskLabels.Length) return 0;
+        byte label = maskLabels[index];
+        return label == 0 || label == AccessoryPreviewLabel ? 0 : GetMaskLabelSize(label);
+    }
     private int                 _width, _height, _depth;
     public int Width => _width;
     public int Height => _height;
@@ -160,7 +240,7 @@ public class LoadDicomData : MonoBehaviour
     // wycięty z czaszki i z wydzielonego kawałka nigdy się nie miesza, a kosz da się dalej ciąć jak
     // każdy inny obiekt. W PRZECIWIEŃSTWIE do maskLabels NIE jest przeliczany przez segmentację — to
     // jedyny identyfikator wystarczająco stabilny, żeby obiekt mógł istnieć na scenie przez dłuższy
-    // czas. Jedyne źródło prawdy o widoczności — patrz "Piece Ownership" w RaymarchCT.shader.
+    // czas. Jedyne źródło prawdy o widoczności — patrz "Piece Ownership" w RaymarchCT_Simplified.shader.
     public NativeArray<byte> pieceOwnerMask;
 
     /// <summary>
@@ -177,6 +257,16 @@ public class LoadDicomData : MonoBehaviour
     public float PixelSpacingY => _pixelSpacingY;
     private float               _sliceThickness = 1f;
     public float SliceThickness => _sliceThickness;
+
+    // Opis serii do panelu operatora. CELOWO tylko dane techniczne badania — żadnych znaczników
+    // identyfikujących pacjenta (imię, ID, data urodzenia, data badania): panel bywa widoczny na
+    // monitorze przy osobach postronnych, a do pracy z modelem te dane nie są potrzebne.
+    public string SeriesModality { get; private set; }
+    public string SeriesDescription { get; private set; }
+    public string ScannerName { get; private set; }
+    /// <summary>Najniższa i najwyższa gęstość (HU) w całej wczytanej serii.</summary>
+    public short HuRangeMin { get; private set; }
+    public short HuRangeMax { get; private set; }
 
     private int _morphologyGeneration = 0;
     private readonly int        _huMin = -1000;
@@ -305,7 +395,7 @@ public class LoadDicomData : MonoBehaviour
             // podwaja szczyt zużycia pamięci, a bufory natywne liczą się tu w gigabajtach.
             UnloadCurrent();
 
-            progress?.Report(new LoadProgress("Czytanie nagłówków DICOM", 0, 0));
+            progress?.Report(new LoadProgress("Reading DICOM headers", 0, 0));
             var sortedFiles = await ScanSeriesFolderAsync(absolutePath, ct);
             if (sortedFiles == null || sortedFiles.Count == 0)
             {
@@ -404,6 +494,7 @@ public class LoadDicomData : MonoBehaviour
         if (pieceOwnerMask.IsCreated) pieceOwnerMask.Dispose();
         if (maskLabels.IsCreated) maskLabels.Dispose();
         _maskLabelSizes = null;
+        MaskLabelsVersion++;
 
         // Zapisane indeksy odnoszą się do wymiarów POPRZEDNIEJ serii — po wczytaniu innej wskazywałyby
         // zupełnie inne miejsca w wolumenie.
@@ -502,6 +593,11 @@ public class LoadDicomData : MonoBehaviour
             _sliceThickness = firstDs.GetSingleValueOrDefault(DicomTag.SliceThickness, 1f);
         }
 
+        SeriesModality    = firstDs.GetSingleValueOrDefault(DicomTag.Modality, string.Empty);
+        SeriesDescription = firstDs.GetSingleValueOrDefault(DicomTag.SeriesDescription, string.Empty);
+        ScannerName       = $"{firstDs.GetSingleValueOrDefault(DicomTag.Manufacturer, string.Empty)} " +
+                            $"{firstDs.GetSingleValueOrDefault(DicomTag.ManufacturerModelName, string.Empty)}".Trim();
+
         if (_pixelSpacingX  <= 0) _pixelSpacingX  = 1f;
         if (_pixelSpacingY  <= 0) _pixelSpacingY  = 1f;
         if (_sliceThickness <= 0) _sliceThickness = 1f;
@@ -521,7 +617,7 @@ public class LoadDicomData : MonoBehaviour
         for (int z = 0; z < _depth; z++)
         {
             ct.ThrowIfCancellationRequested();
-            progress?.Report(new LoadProgress("Wczytywanie plastrów", z, _depth));
+            progress?.Report(new LoadProgress("Loading slices", z, _depth));
 
             string filePath = sortedFiles[z];
             float slope = 1.0f;
@@ -581,10 +677,12 @@ public class LoadDicomData : MonoBehaviour
         short mn = short.MaxValue, mx = short.MinValue;
         foreach (short v in _volumeHu) { if (v < mn) mn = v; if (v > mx) mx = v; }
         Debug.Log($"HU range: [{mn}, {mx}]");
+        HuRangeMin = mn;
+        HuRangeMax = mx;
 
-        progress?.Report(new LoadProgress("Budowanie tekstury 3D", 0, 0));
+        progress?.Report(new LoadProgress("Building 3D texture", 0, 0));
         await BuildTexture3D();
-        progress?.Report(new LoadProgress("Gotowe", _depth, _depth));
+        progress?.Report(new LoadProgress("Done", _depth, _depth));
     }
 
     // -----------------------------------------------------------------------
@@ -1160,6 +1258,8 @@ public class LoadDicomData : MonoBehaviour
             if (isMainBody)
             {
                 Debug.LogWarning("[LoadDicomData] ExtractPickedIslandAsObject: kliknięty punkt należy do GŁÓWNEJ struktury tego obiektu — nie można wydzielić całości (to opróżniłoby rodzica bez reszty). Użyj Cut, jeśli chcesz przyciąć tylko fragment.");
+                _operationNotice = "Not set aside: the selected point is connected to the main structure. " +
+                                   "Increase the separation radius and Recalculate, or cut it free with Cut.";
                 return;
             }
 
@@ -1227,13 +1327,14 @@ public class LoadDicomData : MonoBehaviour
             Debug.LogWarning($"[LoadDicomData] ExtractPickedIslandAsObject: zaznaczenie obejmuje CAŁY źródłowy obiekt " +
                 $"({candidateCount}/{totalSourceOwned} wokseli) — to by tylko przepakowało go w nowy wrapper, nic by nie " +
                 "zostało w oryginale. Pomijam (jeśli chcesz dalej podzielić ten kawałek, zaznacz Pickerem tylko JEGO fragment).");
+            _operationNotice = "Not set aside: the selection is the whole object. Select only a part of it.";
             morphPickedVoxel = null;
             morphPickedVoxelOwnerId = 0;
             morphMaskToKeep = 0;
             return;
         }
 
-        EditHistory.Begin("Odłożenie struktury na bok");
+        EditHistory.Begin("Set structure aside");
 
         var (count, localMin, localMax) = await UniTask.RunOnThreadPool(() =>
         {
@@ -1358,13 +1459,20 @@ public class LoadDicomData : MonoBehaviour
         }
 
         volumeObjectManager.SpawnPieceObject(newId, subLocalCenter, subLocalSize, worldCenter, worldRotation, worldScale,
-            $"Fragment {newId}");
+            $"Piece {newId}");
 
         Debug.Log($"[LoadDicomData] Wydzielono {count} wokseli jako nowy obiekt (właściciel {newId}).");
 
         morphPickedVoxel = null;
         morphPickedVoxelOwnerId = 0;
         morphMaskToKeep = 0;
+
+        // Numeracja wysp (maskLabels) wciąż opisywała stan SPRZED wydzielenia, łącznie z wokselami,
+        // które właśnie odeszły do nowego obiektu. Kolejny Picker i podsumowanie w panelu pracowały
+        // na tych nieaktualnych ID, a pierwsze przeliczenie (np. po cięciu) przenumerowywało je od
+        // nowa — stąd „losowe” ID na głównej strukturze. Przeliczamy od razu, tak jak robi to
+        // chowanie akcesorium do kosza.
+        await GenerateMorphologyMask();
     }
 
     /// <summary>
@@ -1387,7 +1495,7 @@ public class LoadDicomData : MonoBehaviour
         byte binOwner = ResolveCutBinOwner(sourceOwner);
         if (binOwner == 0) return;
 
-        EditHistory.Begin("Schowanie struktury do kosza");
+        EditHistory.Begin("Move structure to bin");
 
         await UniTask.RunOnThreadPool(() =>
         {
@@ -1471,6 +1579,8 @@ public class LoadDicomData : MonoBehaviour
                 // Kliknięty punkt fizycznie należy do głównej struktury (czaszka + przylegająca
                 // tkanka) — Remove Island celowo tego nie usuwa (ostrzeżenie już zalogowane w
                 // FindComponentContainingSeedAsync). Do przycinania głównego obiektu służy Cut.
+                _operationNotice = "Not moved to bin: the selected point is connected to the main structure. " +
+                                   "Increase the separation radius and Recalculate, or cut it free with Cut.";
                 return;
             }
 
@@ -1483,7 +1593,7 @@ public class LoadDicomData : MonoBehaviour
             byte binOwner = ResolveCutBinOwner(ownerId);
             if (binOwner == 0) return;
 
-            EditHistory.Begin("Schowanie struktury do kosza");
+            EditHistory.Begin("Move structure to bin");
 
             await UniTask.RunOnThreadPool(() =>
             {
@@ -1599,8 +1709,7 @@ public class LoadDicomData : MonoBehaviour
     /// 0), a wszystkie kosze ORAZ wszystkie wydzielone fragmenty znikają ze sceny, zwalniając pulę
     /// identyfikatorów. Świadomie mocniejsze niż dawniej (kiedy Reset cofał tylko cięcia, zostawiając
     /// wydzielone obiekty) — teraz to jedno, przewidywalne "wróć do punktu wyjścia", bez resztek po
-    /// poprzedniej sesji pracy. Wołane np. z przycisku UI "Reset Cuts"
-    /// (patrz DynamicUIManager.OnResetCutsButtonPressed).
+    /// poprzedniej sesji pracy. Wołane z UI przez VolumeSession.ResetCutsAsync.
     /// </summary>
     [ContextMenu("Reset Cuts (przywróć stan początkowy)")]
     public void ResetCuts()
@@ -2328,6 +2437,7 @@ public class LoadDicomData : MonoBehaviour
             }
 
             _maskLabelSizes = result.labelSizesById;
+            MaskLabelsVersion++;
             
             // AUTOMATYCZNE ŚLEDZENIE: Jeżeli mamy wskazany konkretny woksel, zaktualizuj MaskToKeep
             // na to ID, w którym aktualnie ten woksel się znajduje! Zapobiega to gubieniu czaszki przy cięciu.
@@ -2353,12 +2463,13 @@ public class LoadDicomData : MonoBehaviour
 
                 if (newId == 0 && wasTrackingMainBody)
                 {
-                    // Śledzony woksel głównej struktury właśnie zniknął spod tego ID (prawie na pewno
-                    // tylko resortowanie numeracji, nie realne usunięcie) — szukamy najbliższego wciąż
-                    // oznaczonego woksela w okolicy i dalej śledzimy JEGO. Promień 24 (nie 12) — przy
+                    // Szukamy najbliższego woksela, który wciąż należy do GŁÓWNEJ struktury (ID 1 — po
+                    // przenumerowaniu zawsze największa wyspa). Dawniej brany był najbliższy woksel
+                    // z JAKĄKOLWIEK etykietą, więc izolacja potrafiła przeskoczyć na przypadkową
+                    // sąsiednią wyspę (losowe ID zamiast czaszki). Promień 24 (nie 12) — przy
                     // wycinaniu całego płata jednym ciągłym ruchem CAŁE najbliższe otoczenie punktu
                     // bywa wycięte naraz, więc mały promień i tak zawodzi.
-                    var nearby = FindNearestLabeledVoxel(maskLabels, morphPickedVoxel.Value, _width, _height, _depth, 24);
+                    var nearby = FindNearestLabeledVoxel(maskLabels, morphPickedVoxel.Value, _width, _height, _depth, 24, 1);
                     if (nearby.HasValue)
                     {
                         morphPickedVoxel = nearby.Value;
@@ -2367,13 +2478,14 @@ public class LoadDicomData : MonoBehaviour
                     }
                     else
                     {
-                        // TWARDE ZABEZPIECZENIE: śledzenie całkowicie zgubione (całe otoczenie
-                        // wycięte). Spadamy na ID 1 — po RemapLabelsAsync to ZAWSZE największa
-                        // ocalała struktura (prawie na pewno wciąż czaszka).
+                        // Śledzenie całkowicie zgubione (całe otoczenie wycięte). Dawniej: ID 1 bez wskazanego woksela — izolacja zostawała włączona, a panel nie
+                        // miał czym jej wyłączyć (przyciski wskazanej struktury gasły). Bezpieczniej
+                        // pokazać całość: model i tak nie znika, a nic nie jest ukryte po cichu.
                         Debug.LogWarning("[Morphology] Śledzenie głównej struktury całkowicie zgubione (całe otoczenie punktu zostało wycięte) — " +
-                            "przełączam na ID 1 (największa ocalała struktura), żeby model nie zniknął. Użyj ponownie Pickera, żeby precyzyjnie wskazać właściwy fragment.");
+                            "wracam do widoku całości. Użyj ponownie Pickera, żeby wskazać właściwy fragment.");
                         morphPickedVoxel = null;
-                        newId = 1;
+                        morphPickedVoxelOwnerId = 0;
+                        morphMaskToKeep = 0;
                     }
                 }
                 else if (newId == 0)
@@ -2419,10 +2531,14 @@ public class LoadDicomData : MonoBehaviour
     /// "powłoki" sześcianu (promień 1, 2, 3...) zamiast całej bryły — tanie (O(maxRadius^3) w
     /// najgorszym razie), bo działa tylko w małej okolicy, nie po całym wolumenie.
     /// </summary>
-    private static Vector3Int? FindNearestLabeledVoxel(NativeArray<byte> labels, Vector3Int start, int width, int height, int depth, int maxRadius)
+    /// <param name="requiredLabel">0 = dowolna etykieta, inaczej tylko woksele z tą etykietą.</param>
+    private static Vector3Int? FindNearestLabeledVoxel(NativeArray<byte> labels, Vector3Int start, int width, int height, int depth, int maxRadius,
+                                                       byte requiredLabel = 0)
     {
+        bool Matches(byte l) => requiredLabel == 0 ? l > 0 : l == requiredLabel;
+
         int startIndex = VolumeSpaceTransform.GetFlatIndex(start, width, height);
-        if (startIndex >= 0 && startIndex < labels.Length && labels[startIndex] > 0) return start;
+        if (startIndex >= 0 && startIndex < labels.Length && Matches(labels[startIndex])) return start;
 
         for (int r = 1; r <= maxRadius; r++)
         {
@@ -2439,7 +2555,7 @@ public class LoadDicomData : MonoBehaviour
                         if (x < 0 || x >= width || y < 0 || y >= height || z < 0 || z >= depth) continue;
 
                         int idx = z * width * height + y * width + x;
-                        if (labels[idx] > 0) return new Vector3Int(x, y, z);
+                        if (Matches(labels[idx])) return new Vector3Int(x, y, z);
                     }
                 }
             }
@@ -2555,7 +2671,7 @@ public class LoadDicomData : MonoBehaviour
     /// Środek okna gęstości (HU) — razem z SetWindowWidth decyduje, które gęstości są widoczne.
     ///
     /// UWAGA na architekturę: aktywny shader (RaymarchCT_Simplified) CELOWO nie remapuje gęstości
-    /// przez okno — jego funkcja ApplyWindowLevel jest martwa, bo funkcja transferu jest budowana
+    /// przez okno (nie ma w nim żadnego remapowania W/L), bo funkcja transferu jest budowana
     /// z ABSOLUTNYCH wartości HU (progi 250 HU = naczynia, 380 = kość). Przemapowanie wejścia
     /// rozjechałoby te progi. Dlatego okno działa tutaj, po stronie C#, jako wygaszanie
     /// przezroczystości przy budowaniu funkcji transferu: paleta i progi zostają nietknięte, a to,
@@ -2683,4 +2799,4 @@ public class LoadDicomData : MonoBehaviour
         // Reload Domain w Enter Play Mode Settings).
         Helpers.VolumeMorphology.DisposeStaticBuffers();
     }
-}
+}

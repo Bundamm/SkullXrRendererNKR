@@ -58,9 +58,15 @@ Shader "Unlit/Volume/RaymarchCT_Surface"
 
         [Header(Piece Ownership)]
         // Trwały (NIE przeliczany przez segmentację) mask własności — 0 = główny wolumen,
-        // N = wydzielony obiekt nr N. Patrz RaymarchCT.shader dla pełnego opisu.
+        // N = wydzielony obiekt nr N. Pozwala wydzielić fragment do osobnego GameObjectu
+        // bez duplikowania _VolumeTex: każdy klon materiału filtruje po własnym _OwnerFilterID.
+        // Patrz LoadDicomData.ExtractPickedIslandAsObject / VolumeObjectManager.
         _OwnerTex       ("Piece Owner Mask", 3D) = "black" {}
         _OwnerFilterID  ("Owner Filter ID (0=main volume)", Float) = 0
+        // Stały, policzony raz przy wydzieleniu obiektu podzbiór lokalnej przestrzeni -0.5..0.5
+        // ORYGINALNEGO VolumeCube, do którego mapuje się lokalna -0.5..0.5 przestrzeń TEGO obiektu
+        // (transform-niezmiennicza — działa poprawnie niezależnie od tego, jak user przesunie/obróci
+        // wydzielony kawałek, bo Unity sama liczy lokalną przestrzeń z unity_WorldToObject).
         _SubLocalCenter ("Sub-Volume Local Center", Vector) = (0,0,0,0)
         _SubLocalSize   ("Sub-Volume Local Size", Vector) = (1,1,1,0)
 
@@ -234,16 +240,6 @@ Shader "Unlit/Volume/RaymarchCT_Surface"
             }
 
             // -------------------------------------------------------
-            // Remapowanie HU surowego (znormalizowanego 0-1) przez Window/Level
-            float ApplyWindowLevel(float rawNorm)
-            {
-                float huVal  = rawNorm * (_HUMax - _HUMin) + _HUMin;
-                float wMin   = _WindowCenter - _WindowWidth * 0.5;
-                float wMax   = _WindowCenter + _WindowWidth * 0.5;
-                return saturate((huVal - wMin) / (wMax - wMin));
-            }
-
-            // -------------------------------------------------------
             fixed4 frag(v2f i) : SV_Target
             {
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(i);
@@ -324,7 +320,7 @@ Shader "Unlit/Volume/RaymarchCT_Surface"
                     // --- SUB-VOLUME REMAP (Piece Ownership) ---
                     // Mapuje lokalną -0.5..0.5 przestrzeń TEGO obiektu na odpowiedni podzbiór
                     // lokalnej przestrzeni oryginalnego VolumeCube — identyczność dla głównego
-                    // wolumenu (_SubLocalCenter=0, _SubLocalSize=1). Patrz RaymarchCT.shader.
+                    // wolumenu (_SubLocalCenter=0, _SubLocalSize=1). Odpowiednik po stronie C#: VolumeSpaceTransform.
                     float3 origLocalPos = _SubLocalCenter.xyz + samplePos * _SubLocalSize.xyz;
                     float3 uvw      = mul(rotFinal, origLocalPos) + 0.5;
 
@@ -415,7 +411,7 @@ Shader "Unlit/Volume/RaymarchCT_Surface"
 
                     float  rawSamp  = tex3Dlod(_VolumeTex, float4(uvw, 0)).r;
 
-                    // Omijamy remapping (ApplyWindowLevel), ponieważ Transfer Function w C# generowany jest z absolutnych wartości HU.
+                    // Bez remapowania przez okno HU: Transfer Function w C# jest budowana z absolutnych wartości HU.
                     float4 tfSample = tex2Dlod(_TransferTex, float4(rawSamp, 0.5, 0, 0));
 
                     float sampleAlpha = tfSample.a;

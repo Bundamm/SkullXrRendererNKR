@@ -64,6 +64,8 @@ namespace SkullXrRendererNKR.App
         public event Action<string> OnStatusChanged;
         /// <summary>Wczytano (albo zwolniono) serię — ścieżka lub null.</summary>
         public event Action<string> OnScanChanged;
+        /// <summary>Wynik kliknięcia narzędziem diagnostycznym (tekst gotowy do pokazania).</summary>
+        public event Action<string> OnInspectReport;
         public bool IsBusy { get; private set; }
         public string StatusMessage { get; private set; } = string.Empty;
         public bool IsVolumeReady => dicomData != null && dicomData.IsVolumeReady;
@@ -86,6 +88,7 @@ namespace SkullXrRendererNKR.App
         private void OnEnable()
         {
             if (objectManager != null) objectManager.OnTargetsChanged += RaiseTargetsChanged;
+            if (volumePicker != null) volumePicker.OnInspectReport += RaiseInspectReport;
             if (dicomData != null)
             {
                 dicomData.OnVolumeReady += HandleVolumeReady;
@@ -96,6 +99,7 @@ namespace SkullXrRendererNKR.App
         private void OnDisable()
         {
             if (objectManager != null) objectManager.OnTargetsChanged -= RaiseTargetsChanged;
+            if (volumePicker != null) volumePicker.OnInspectReport -= RaiseInspectReport;
             if (dicomData != null)
             {
                 dicomData.OnVolumeReady -= HandleVolumeReady;
@@ -104,6 +108,7 @@ namespace SkullXrRendererNKR.App
         }
 
         private void RaiseUndoHistoryChanged() => OnUndoHistoryChanged?.Invoke();
+        private void RaiseInspectReport(string report) => OnInspectReport?.Invoke(report);
 
         private void OnDestroy()
         {
@@ -196,7 +201,7 @@ namespace SkullXrRendererNKR.App
             vesselHueLow = lowHue;
             vesselHueHigh = highHue;
 
-            SetStatus("Przywrócono barwy sprzed zmian.");
+            SetStatus("Colors reset.");
             OnRenderSettingsChanged?.Invoke();
         }
 
@@ -429,7 +434,7 @@ namespace SkullXrRendererNKR.App
             dicomData.SetWindowCenter(windowCenterHU);
             dicomData.SetWindowWidth(windowWidthHU);
 
-            SetStatus($"Okno: {preset.Name} ({windowCenterHU:0} / {windowWidthHU:0} HU)");
+            SetStatus($"Window: {preset.Name} ({windowCenterHU:0} / {windowWidthHU:0} HU)");
             OnRenderSettingsChanged?.Invoke();
         }
 
@@ -445,7 +450,7 @@ namespace SkullXrRendererNKR.App
             dicomData.SetVesselColorLowHue(vesselHueLow);
             dicomData.SetVesselColorHighHue(vesselHueHigh);
 
-            SetStatus($"Barwy: {preset.Name}");
+            SetStatus($"Colors: {preset.Name}");
             OnRenderSettingsChanged?.Invoke();
         }
 
@@ -490,7 +495,7 @@ namespace SkullXrRendererNKR.App
             CutThresholdHU = preset.Get(12, CutThresholdHU);
             MaxCutDepthMM = preset.Get(13, MaxCutDepthMM);
 
-            SetStatus($"Wczytano zestaw: {preset.Name}. Rozdzielanie struktur wymaga przeliczenia.");
+            SetStatus($"Preset loaded: {preset.Name}. Click Recalculate to update structures.");
             OnRenderSettingsChanged?.Invoke();
             OnSegmentationSettingsChanged?.Invoke();
         }
@@ -561,35 +566,94 @@ namespace SkullXrRendererNKR.App
         /// <summary>Czy Picker ma aktualnie coś wyizolowanego — warunek dla Wydziel/Usuń wyspę.</summary>
         public bool HasPickedIsland => dicomData != null && dicomData.morphPickedVoxel.HasValue;
 
+        /// <summary>Woksel ostatniego wskazania — pozwala UI zauważyć, że wskazano coś innego.</summary>
+        public UnityEngine.Vector3Int? PickedVoxel => dicomData != null ? dicomData.morphPickedVoxel : null;
+
+        /// <summary>Obiekt, na którym wskazano strukturę (null, gdy nic nie jest wskazane).</summary>
+        public Helpers.VolumeRenderTarget PickedIslandOwner =>
+            HasPickedIsland && objectManager != null ? objectManager.FindTarget(dicomData.morphPickedVoxelOwnerId) : null;
+
+        /// <summary>Objętość wskazanej struktury w cm³, albo 0, gdy nie da się jej podać.</summary>
+        public float PickedIslandVolumeCm3 =>
+            dicomData == null ? 0f
+                : dicomData.GetPickedIslandVoxelCount() * dicomData.PixelSpacingX * dicomData.PixelSpacingY *
+                  dicomData.SliceThickness / 1000f;
+
         #endregion
 
         // ------------------------------------------------------------------
         #region Akcje
 
         public UniTask GenerateMaskAsync() =>
-            RunExclusiveAsync("Generowanie maski segmentacji…", () => dicomData.GenerateMorphologyMask());
+            RunExclusiveAsync("Calculating structures…", () => dicomData.GenerateMorphologyMask());
 
         public UniTask ResetCutsAsync() =>
-            RunExclusiveAsync("Cofanie wszystkich cięć…", () => dicomData.ResetCutsAsync());
+            RunExclusiveAsync("Undoing all cuts…", () => dicomData.ResetCutsAsync());
 
         public UniTask ExtractPickedIslandAsync() =>
-            RunExclusiveAsync("Wydzielanie obiektu…", () => dicomData.ExtractPickedIslandAsObjectAsync());
+            RunExclusiveAsync("Setting structure aside…", async () =>
+            {
+                await dicomData.ExtractPickedIslandAsObjectAsync();
+                ReportOperationNotice();
+            });
 
         public UniTask DeletePickedIslandAsync() =>
-            RunExclusiveAsync("Chowanie wskazanej wyspy…", () => dicomData.DeletePickedIslandAsync());
+            RunExclusiveAsync("Moving structure to bin…", async () =>
+            {
+                await dicomData.DeletePickedIslandAsync();
+                ReportOperationNotice();
+            });
+
+        /// <summary>Gdy operacja odmówiła działania, jej powód trafia do paska stanu zamiast „Gotowe.”.</summary>
+        private void ReportOperationNotice()
+        {
+            string notice = dicomData.TakeOperationNotice();
+            if (!string.IsNullOrEmpty(notice)) SetStatus(notice);
+        }
+
+        /// <summary>ID wyspy, do której zawężony jest widok (0 = widać całość).</summary>
+        public int IsolatedIslandId => dicomData != null ? dicomData.morphMaskToKeep : 0;
+        public bool IsAccessoryIsolated => dicomData != null && dicomData.IsAccessoryPreviewIsolated;
+        public int MaskLabelsVersion => dicomData != null ? dicomData.MaskLabelsVersion : 0;
+
+        /// <summary>Rozmiar wyspy w cm³ według ostatniej segmentacji (0 = brak takiej wyspy).</summary>
+        public float IslandVolumeCm3(int id) =>
+            dicomData == null || id <= 0 || id > 254 ? 0f
+                : dicomData.GetMaskLabelSize((byte)id) * dicomData.PixelSpacingX * dicomData.PixelSpacingY *
+                  dicomData.SliceThickness / 1000f;
+
+        /// <summary>Wyłącza izolację — na modelu znów widać całą warstwę.</summary>
+        public void ShowWholeVolume()
+        {
+            if (dicomData == null || IsBusy) return;
+            dicomData.ShowWholeVolume();
+            SetStatus("Showing all.");
+            OnSegmentationSettingsChanged?.Invoke();
+        }
+
+        /// <summary>Zawęża widok do wyspy o podanym ID i ustawia ją jako wskazaną.</summary>
+        public UniTask IsolateIslandAsync(int id) =>
+            RunExclusiveAsync($"Finding island ID {id}…", async () =>
+            {
+                bool ok = id > 0 && id < 255 && await dicomData.IsolateIslandAsync((byte)id);
+                SetStatus(ok ? $"Showing only ID {id}." : $"There is no island ID {id}. Try Recalculate.");
+                OnSegmentationSettingsChanged?.Invoke();
+            });
 
         /// <summary>Czy jest co cofać, i co dokładnie — do podpisu przycisku.</summary>
         public bool CanUndo => dicomData != null && dicomData.EditHistory.CanUndo;
         public string NextUndoLabel => dicomData != null ? dicomData.EditHistory.NextUndoLabel : null;
+        public System.Collections.Generic.IReadOnlyList<string> UndoStepLabels =>
+            dicomData != null ? dicomData.EditHistory.StepLabelsNewestFirst : System.Array.Empty<string>();
 
         /// <summary>Zmieniła się historia cofania (przybył krok, ubył, albo została wyczyszczona).</summary>
         public event Action OnUndoHistoryChanged;
 
         public UniTask UndoLastEditAsync() =>
-            RunExclusiveAsync("Cofanie ostatniej operacji…", async () =>
+            RunExclusiveAsync("Undoing last operation…", async () =>
             {
                 string label = await dicomData.UndoLastEditAsync();
-                SetStatus(label != null ? $"Cofnięto: {label}." : "Nie ma czego cofnąć.");
+                SetStatus(label != null ? $"Undone: {label}." : "Nothing to undo.");
             });
 
         public void ResetModelPosition()
@@ -625,7 +689,7 @@ namespace SkullXrRendererNKR.App
                 return false;
             }
 
-            SetBusy(true, "Wczytywanie skanu…");
+            SetBusy(true, "Loading scan…");
             try
             {
                 bool ok = await dicomData.LoadSeriesAsync(absolutePath, progress, ct);
@@ -634,7 +698,7 @@ namespace SkullXrRendererNKR.App
             }
             finally
             {
-                SetBusy(false, IsVolumeReady ? "Skan wczytany." : "Nie udało się wczytać skanu.");
+                SetBusy(false, IsVolumeReady ? "Scan loaded." : "Could not load the scan.");
             }
         }
 
@@ -673,13 +737,13 @@ namespace SkullXrRendererNKR.App
             catch (Exception ex)
             {
                 Debug.LogError($"[VolumeSession] Operacja „{label}” zakończyła się błędem: {ex.Message}\n{ex.StackTrace}");
-                SetStatus("Operacja zakończona błędem — szczegóły w konsoli.");
+                SetStatus("Operation failed. See the console for details.");
             }
             finally
             {
                 // Status ustawiony w catch nie może zostać zamazany „gotowe”, więc sprawdzamy, czy
                 // wciąż wisi etykieta operacji.
-                SetBusy(false, StatusMessage == label ? "Gotowe." : StatusMessage);
+                SetBusy(false, StatusMessage == label ? "Done." : StatusMessage);
             }
         }
 

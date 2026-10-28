@@ -31,22 +31,22 @@ public class RemotingConnectionManager : MonoBehaviour
         if (!AppRemoting.TryGetConnectionState(out ConnectionState state, out DisconnectReason reason))
         {
             canConnect = true;
-            return "Nie połączono z goglami.";
+            return "Headset not connected.";
         }
 
         switch (state)
         {
             case ConnectionState.Connected:
                 canConnect = false;
-                return "Połączono z goglami.";
+                return "Headset connected.";
             case ConnectionState.Connecting:
                 canConnect = false;
-                return "Łączenie z goglami…";
+                return "Connecting to headset…";
             default:
                 canConnect = true;
                 return reason == DisconnectReason.None
-                    ? "Nie połączono z goglami."
-                    : $"Rozłączono ({reason}).";
+                    ? "Headset not connected."
+                    : $"Disconnected ({reason}).";
         }
     }
 
@@ -81,7 +81,7 @@ public class RemotingConnectionManager : MonoBehaviour
         AppRemoting.StartConnectingToPlayer(RemotingConf);
 
         Debug.Log($"Próba połączenia z: {targetIP}...");
-        if (connectionCheckText != null) connectionCheckText.text = "Łączenie...";
+        if (connectionCheckText != null) connectionCheckText.text = "Connecting...";
         OnConnectionStateChanged?.Invoke();
     }
 
@@ -110,7 +110,7 @@ public class RemotingConnectionManager : MonoBehaviour
     private void OnConnected()
     {
         Debug.Log("Połączono pomyślnie!");
-        if (connectionCheckText != null) connectionCheckText.text = "Połączono";
+        if (connectionCheckText != null) connectionCheckText.text = "Connected";
         OnConnectionStateChanged?.Invoke();
     }
 

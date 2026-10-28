@@ -6,7 +6,7 @@ namespace Helpers
     {
         /// <summary>
         /// Konwertuje pozycję lokalną wewnątrz VolumeCube (od -0.5 do 0.5) na koordynaty UVW tekstury (0.0 do 1.0)
-        /// z uwzględnieniem rotacji HLSL z shadera RaymarchCT.
+        /// z uwzględnieniem rotacji HLSL z shadera RaymarchCT_Simplified.
         /// UWAGA: Ponieważ shader rzutuje promień (World->Local) i obraca próbkę, aby odczytać teksturę, 
         /// my również aplikujemy DOKŁADNIE taką samą rotację w tę samą stronę podczas naszego raymarchingu.
         /// Zmiana kolejności mnożenia w shaderze musi być odzwierciedlona tutaj!
@@ -64,7 +64,7 @@ namespace Helpers
         /// <summary>
         /// Mapuje pozycję lokalną (-0.5..0.5) NA WYDZIELONYM OBIEKCIE z powrotem na odpowiadającą
         /// pozycję lokalną w ORYGINALNYM VolumeCube — DOKŁADNIE ten sam wzór co "SUB-VOLUME REMAP"
-        /// w RaymarchCT.shader/RaymarchCT_Simplified.shader (musi być trzymany w synchronizacji
+        /// w RaymarchCT_Simplified.shader (musi być trzymany w synchronizacji
         /// ręcznie, jak reszta CPU-GPU picking mathu w tej klasie). subLocalCenter/subLocalSize są
         /// stałe, policzone raz przy wydzieleniu (patrz LoadDicomData.ExtractPickedIslandAsObject)
         /// — działa poprawnie niezależnie od tego, jak user później przesunie/obróci/przeskaluje

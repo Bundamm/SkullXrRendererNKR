@@ -110,15 +110,15 @@ namespace SkullXrRendererNKR.UI.Desktop
             var columnFitter = column.gameObject.AddComponent<ContentSizeFitter>();
             columnFitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
-            var title = DesktopUIFactory.CreateText(column, "Wybór skanu", 34f, FontStyles.Bold);
+            var title = DesktopUIFactory.CreateText(column, "Select scan", 34f, FontStyles.Bold);
             DesktopUIFactory.SetHeight(title.gameObject, 46f);
 
             var subtitle = DesktopUIFactory.CreateText(column,
-                "Wskaż folder z pojedynczą serią DICOM (jeden folder = jedna seria plastrów).",
+                "Choose a folder with a single DICOM series (one folder = one series of slices).",
                 16f, FontStyles.Normal, TextAlignmentOptions.Left, DesktopUIFactory.Palette.TextDim);
             DesktopUIFactory.SetHeight(subtitle.gameObject, 26f);
 
-            var recentLabel = DesktopUIFactory.CreateText(column, "Ostatnio otwierane", 18f, FontStyles.Bold);
+            var recentLabel = DesktopUIFactory.CreateText(column, "Recently opened", 18f, FontStyles.Bold);
             DesktopUIFactory.SetHeight(recentLabel.gameObject, 30f);
 
             _recentList = DesktopUIFactory.CreateScrollList(column, "RecentList", out _);
@@ -132,28 +132,28 @@ namespace SkullXrRendererNKR.UI.Desktop
             // Powrót do folderu nadrzędnego, ale NIE wyżej niż ten wskazany systemowym oknem
             // (patrz BrowseAsync) — wybór foldera to decyzja, gdzie zaczynamy szukać, a wędrowanie
             // stamtąd w górę zamieniłoby ekran startowy w drugą przeglądarkę plików.
-            _upButton = DesktopUIFactory.CreateButton(browseRow, "◄ Wyżej",
+            _upButton = DesktopUIFactory.CreateButton(browseRow, "< Up",
                                                       () => GoUpAsync().Forget(),
                                                       DesktopUIFactory.Palette.PanelAlt);
             var upLayout = _upButton.gameObject.GetComponent<LayoutElement>();
             upLayout.preferredWidth = 110f;
             upLayout.flexibleWidth = 0f;
 
-            _browseButton = DesktopUIFactory.CreateButton(browseRow, "Wybierz folder…",
+            _browseButton = DesktopUIFactory.CreateButton(browseRow, "Choose folder…",
                                                           () => BrowseAsync().Forget(),
                                                           DesktopUIFactory.Palette.Accent);
             _browseButton.gameObject.GetComponent<LayoutElement>().preferredWidth = 220f;
             _browseButton.gameObject.GetComponent<LayoutElement>().flexibleWidth = 0f;
 
-            _pathInput = DesktopUIFactory.CreateInputField(browseRow, "…albo wklej ścieżkę do folderu");
+            _pathInput = DesktopUIFactory.CreateInputField(browseRow, "…or paste a folder path");
             _pathInput.onEndEdit.AddListener(path => InspectAsync(path).Forget());
 
             if (!WindowsFolderPicker.IsSupported)
             {
                 _browseButton.interactable = false;
                 var hint = DesktopUIFactory.CreateText(column,
-                    "Systemowe okno wyboru folderu jest dostępne tylko na komputerze — tutaj wpisz ścieżkę ręcznie.",
-                    14f, FontStyles.Italic, TextAlignmentOptions.Left, DesktopUIFactory.Palette.TextDim);
+                    "The system folder picker is only available on desktop. Type the path instead.",
+                    14f, FontStyles.Normal, TextAlignmentOptions.Left, DesktopUIFactory.Palette.TextDim);
                 DesktopUIFactory.SetHeight(hint.gameObject, 24f);
             }
 
@@ -172,7 +172,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             DesktopUIFactory.SetHeight(_seriesListRoot, 150f);
             _seriesListRoot.SetActive(false);
 
-            _loadButton = DesktopUIFactory.CreateButton(column, "Wczytaj skan",
+            _loadButton = DesktopUIFactory.CreateButton(column, "Load scan",
                                                         () => LoadSelectedAsync().Forget(),
                                                         DesktopUIFactory.Palette.Accent, 46f);
             return background.gameObject;
@@ -191,7 +191,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             column.sizeDelta = new Vector2(680f, 200f);
             DesktopUIFactory.AddVerticalLayout(column.gameObject, 14f, 20);
 
-            var title = DesktopUIFactory.CreateText(column, "Wczytywanie skanu", 26f, FontStyles.Bold);
+            var title = DesktopUIFactory.CreateText(column, "Loading scan", 26f, FontStyles.Bold);
             DesktopUIFactory.SetHeight(title.gameObject, 36f);
 
             _stageText = DesktopUIFactory.CreateText(column, "", 16f, FontStyles.Normal,
@@ -200,7 +200,7 @@ namespace SkullXrRendererNKR.UI.Desktop
 
             _progressFill = DesktopUIFactory.CreateProgressBar(column);
 
-            DesktopUIFactory.CreateButton(column, "Anuluj", () => appFlow?.CancelLoading());
+            DesktopUIFactory.CreateButton(column, "Cancel", () => appFlow?.CancelLoading());
 
             background.gameObject.SetActive(false);
             return background.gameObject;
@@ -247,7 +247,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             var recent = ScanLibrary.GetRecentFolders();
             if (recent.Count == 0)
             {
-                var empty = DesktopUIFactory.CreateText(_recentList, "Nic tu jeszcze nie ma — wskaż folder poniżej.",
+                var empty = DesktopUIFactory.CreateText(_recentList, "Nothing here yet. Choose a folder below.",
                                                         15f, FontStyles.Italic, TextAlignmentOptions.Left,
                                                         DesktopUIFactory.Palette.TextDim);
                 DesktopUIFactory.SetHeight(empty.gameObject, 28f);
@@ -279,7 +279,7 @@ namespace SkullXrRendererNKR.UI.Desktop
                                                                   ? appFlow.session.dicomData
                                                                   : null);
 
-            string picked = await WindowsFolderPicker.PickFolderAsync("Wskaż folder z serią DICOM", start);
+            string picked = await WindowsFolderPicker.PickFolderAsync("Choose a folder with a DICOM series", start);
             if (string.IsNullOrEmpty(picked)) return; // anulowane
 
             // Folder wskazany systemowym oknem staje się granicą nawigacji — powyżej niego przycisk
@@ -355,7 +355,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             // inaczej przycisk „wyżej" byłby martwy wszędzie poza ścieżką przez systemowe okno.
             if (string.IsNullOrEmpty(_browseRoot) || !IsWithin(path, _browseRoot)) _browseRoot = path;
 
-            SetSelectedPath(null, "Sprawdzam folder…");
+            SetSelectedPath(null, "Checking folder…");
             if (_pathInput != null) _pathInput.SetTextWithoutNotify(path);
 
             ScanInfo info;
@@ -384,7 +384,7 @@ namespace SkullXrRendererNKR.UI.Desktop
                 return;
             }
 
-            string patient = string.IsNullOrWhiteSpace(info.PatientName) ? "(brak danych pacjenta)" : info.PatientName;
+            string patient = string.IsNullOrWhiteSpace(info.PatientName) ? "(no patient data)" : info.PatientName;
             SetSelectedPath(path, $"<b>{info.FolderName}</b>\n{patient}\n{info.Summary}\n" +
                                   $"<color=#9EA5AE>{path}</color>");
         }
@@ -404,7 +404,7 @@ namespace SkullXrRendererNKR.UI.Desktop
                     : " — " + entry.SeriesDescription;
 
                 var button = DesktopUIFactory.CreateButton(_seriesList,
-                    $"{entry.FolderName}{description}   ({entry.SliceCount} plików)",
+                    $"{entry.FolderName}{description}   ({entry.SliceCount} files)",
                     () => InspectAsync(capturedPath).Forget(),
                     DesktopUIFactory.Palette.PanelAlt, 32f);
 
@@ -420,7 +420,7 @@ namespace SkullXrRendererNKR.UI.Desktop
         private void SetSelectedPath(string path, string info)
         {
             _selectedPath = path;
-            if (_infoText != null) _infoText.text = info ?? "Nie wybrano jeszcze żadnego folderu.";
+            if (_infoText != null) _infoText.text = info ?? "No folder selected yet.";
             if (_loadButton != null) _loadButton.interactable = !string.IsNullOrEmpty(path);
 
             // Lista serii dotyczy KONKRETNEGO folderu studium — przy każdym innym wyborze musi
@@ -435,7 +435,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             if (string.IsNullOrEmpty(_selectedPath) || appFlow == null) return;
 
             if (_progressFill != null) _progressFill.fillAmount = 0f;
-            if (_stageText != null) _stageText.text = "Przygotowanie…";
+            if (_stageText != null) _stageText.text = "Preparing…";
 
             await appFlow.LoadScanAsync(_selectedPath);
         }

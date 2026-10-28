@@ -54,8 +54,18 @@ namespace Helpers
         public event Action OnChanged;
 
         public bool CanUndo => _steps.Count > 0;
-        public int StepCount => _steps.Count;
         public string NextUndoLabel => _steps.Count > 0 ? _steps[_steps.Count - 1].Label : null;
+
+        /// <summary>Podpisy kroków możliwych do cofnięcia, od najnowszego — do listy historii w panelu.</summary>
+        public IReadOnlyList<string> StepLabelsNewestFirst
+        {
+            get
+            {
+                var labels = new List<string>(_steps.Count);
+                for (int i = _steps.Count - 1; i >= 0; i--) labels.Add(_steps[i].Label);
+                return labels;
+            }
+        }
 
         /// <summary>
         /// Otwiera nowy krok. Wołanie tego bez późniejszego Commit nie psuje stanu — kolejny Begin

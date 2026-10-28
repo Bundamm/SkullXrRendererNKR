@@ -160,7 +160,9 @@ namespace SkullXrRendererNKR.UI.Desktop
         /// </summary>
         public static TextMeshProUGUI CreateParagraph(Transform parent, string content, float size = 12f)
         {
-            var text = CreateText(parent, content, size, FontStyles.Italic,
+            // Zwykły krój, nie kursywa: akapity zostały tylko jako krótkie odczyty stanu, a dłuższe
+            // objaśnienia przeszły do dymków (AddTooltip) i przycisków „?” przy nagłówkach.
+            var text = CreateText(parent, content, size, FontStyles.Normal,
                                   TextAlignmentOptions.TopLeft, Palette.TextDim);
             text.enableWordWrapping = true;
             return text;
@@ -244,6 +246,16 @@ namespace SkullXrRendererNKR.UI.Desktop
             /// </summary>
             public System.Action<float, TextMeshProUGUI> Decorator;
 
+            /// <summary>Dymek z objaśnieniem dla całego wiersza suwaka (podpis, suwak, wartość).</summary>
+            public SliderControl Tip(string text)
+            {
+                if (Slider != null) AddTooltip(Slider.transform.parent, text);
+                return this;
+            }
+
+            /// <summary>Pole wpisywania dokładnej wartości — jego tekstem jest ValueLabel.</summary>
+            public TMP_InputField Input;
+
             public void SetValueWithoutNotify(float value)
             {
                 if (Slider != null) Slider.SetValueWithoutNotify(value);
@@ -253,8 +265,49 @@ namespace SkullXrRendererNKR.UI.Desktop
             public void RefreshLabel(float value)
             {
                 if (ValueLabel == null) return;
-                ValueLabel.text = value.ToString(Format) + Unit;
+                // W trakcie wpisywania nie nadpisujemy tekstu — synchronizacja z goglami potrafi
+                // przyjść w połowie wpisywanej liczby i skasowałaby to, co użytkownik właśnie pisze.
+                if (Input != null && Input.isFocused) return;
+                string text = value.ToString(Format) + Unit;
+                if (Input != null) Input.SetTextWithoutNotify(text);
+                else ValueLabel.text = text;
                 Decorator?.Invoke(value, ValueLabel);
+            }
+
+            /// <summary>Krok przycisków -/+ wynikający z formatu odczytu: "0" → 1, "0.0" → 0.1, "0.00" → 0.01.</summary>
+            public float Step
+            {
+                get
+                {
+                    if (Slider != null && Slider.wholeNumbers) return 1f;
+                    int dot = Format.IndexOf('.');
+                    int decimals = dot < 0 ? 0 : Format.Length - dot - 1;
+                    return Mathf.Pow(10f, -decimals);
+                }
+            }
+
+            /// <summary>Przesuwa wartość o podaną liczbę kroków (z Shiftem ×10) — wywołuje zdarzenie zmiany.</summary>
+            public void Nudge(int steps)
+            {
+                if (Slider == null) return;
+                var keyboard = UnityEngine.InputSystem.Keyboard.current;
+                bool shift = keyboard != null && (keyboard.leftShiftKey.isPressed || keyboard.rightShiftKey.isPressed);
+                Slider.value = Mathf.Clamp(Slider.value + steps * Step * (shift ? 10f : 1f),
+                                           Slider.minValue, Slider.maxValue);
+            }
+
+            /// <summary>
+            /// Wpisana wartość: akceptuje przecinek i kropkę, ignoruje jednostkę. Poza zakresem
+            /// suwaka — przycinana do zakresu, a nie odrzucana (wpisanie 9999 ma dać maksimum).
+            /// </summary>
+            public void ApplyTypedValue(string text)
+            {
+                if (Slider == null) return;
+                string cleaned = (text ?? "").Replace(Unit.Trim(), "").Replace(',', '.').Trim();
+                if (float.TryParse(cleaned, System.Globalization.NumberStyles.Float,
+                                   System.Globalization.CultureInfo.InvariantCulture, out float typed))
+                    Slider.value = Mathf.Clamp(typed, Slider.minValue, Slider.maxValue);
+                RefreshLabel(Slider.value);
             }
         }
 
@@ -270,26 +323,63 @@ namespace SkullXrRendererNKR.UI.Desktop
                                      Palette.TextDim);
             var captionRect = (RectTransform)caption.transform;
             captionRect.anchorMin = new Vector2(0f, 1f);
-            captionRect.anchorMax = new Vector2(0.7f, 1f);
+            captionRect.anchorMax = new Vector2(0.62f, 1f);
             captionRect.pivot = new Vector2(0f, 1f);
             captionRect.offsetMin = new Vector2(0f, -18f);
             captionRect.offsetMax = Vector2.zero;
 
-            var valueLabel = CreateText(row, "", 14f, FontStyles.Bold, TextAlignmentOptions.TopRight);
-            var valueRect = (RectTransform)valueLabel.transform;
-            valueRect.anchorMin = new Vector2(0.7f, 1f);
+            // Odczyt wartości jest zarazem polem do wpisania dokładnej liczby: kliknięcie w nie,
+            // wpisanie i Enter. Suwak na 400 pikselach przy zakresie kilku tysięcy HU nie pozwala
+            // trafić konkretnej wartości, a do tego właśnie operator wraca między badaniami.
+            var valueBox = CreatePanel(row, "Value", new Color(1f, 1f, 1f, 0.04f));
+            var valueRect = (RectTransform)valueBox.transform;
+            valueRect.anchorMin = new Vector2(0.62f, 1f);
             valueRect.anchorMax = new Vector2(1f, 1f);
             valueRect.pivot = new Vector2(1f, 1f);
-            valueRect.offsetMin = new Vector2(0f, -18f);
+            valueRect.offsetMin = new Vector2(0f, -20f);
             valueRect.offsetMax = Vector2.zero;
+            valueBox.gameObject.AddComponent<RectMask2D>();
+
+            var valueLabel = CreateText(valueBox.transform, "", 14f, FontStyles.Bold, TextAlignmentOptions.Right);
+            Stretch((RectTransform)valueLabel.transform, 2f);
+
+            var valueInput = valueBox.gameObject.AddComponent<TMP_InputField>();
+            // TMP_InputField tworzy kursor tekstowy i podpina się pod tekst w OnEnable — który przy
+            // AddComponent biegnie od razu, gdy textComponent jest jeszcze pusty. Wyłączenie na czas
+            // konfiguracji i ponowne włączenie powtarza OnEnable już z kompletem referencji.
+            valueInput.enabled = false;
+            valueInput.targetGraphic = valueBox;
+            valueInput.textViewport = valueRect;
+            valueInput.textComponent = valueLabel;
+            valueInput.lineType = TMP_InputField.LineType.SingleLine;
+            valueInput.richText = false;
+            valueInput.enabled = true;
+
+            // --- przyciski -/+ po bokach suwaka: dokładne kroki bez szarpania myszą ---
+            const float nudgeWidth = 22f;
+            var minus = CreateButton(row, "-", null, Palette.PanelAlt, 18f);
+            var minusRect = (RectTransform)minus.transform;
+            minusRect.anchorMin = new Vector2(0f, 0f);
+            minusRect.anchorMax = new Vector2(0f, 0f);
+            minusRect.pivot = new Vector2(0f, 0f);
+            minusRect.sizeDelta = new Vector2(nudgeWidth, 18f);
+            minusRect.anchoredPosition = new Vector2(0f, 1f);
+
+            var plus = CreateButton(row, "+", null, Palette.PanelAlt, 18f);
+            var plusRect = (RectTransform)plus.transform;
+            plusRect.anchorMin = new Vector2(1f, 0f);
+            plusRect.anchorMax = new Vector2(1f, 0f);
+            plusRect.pivot = new Vector2(1f, 0f);
+            plusRect.sizeDelta = new Vector2(nudgeWidth, 18f);
+            plusRect.anchoredPosition = new Vector2(0f, 1f);
 
             // --- właściwy suwak (hierarchia wymagana przez UnityEngine.UI.Slider) ---
             var sliderRect = CreateRect(row, "Slider");
             sliderRect.anchorMin = new Vector2(0f, 0f);
             sliderRect.anchorMax = new Vector2(1f, 0f);
             sliderRect.pivot = new Vector2(0.5f, 0f);
-            sliderRect.offsetMin = new Vector2(0f, 2f);
-            sliderRect.offsetMax = new Vector2(0f, 18f);
+            sliderRect.offsetMin = new Vector2(nudgeWidth + 6f, 2f);
+            sliderRect.offsetMax = new Vector2(-(nudgeWidth + 6f), 18f);
 
             var slider = sliderRect.gameObject.AddComponent<Slider>();
 
@@ -324,8 +414,16 @@ namespace SkullXrRendererNKR.UI.Desktop
             slider.maxValue = max;
             slider.SetValueWithoutNotify(Mathf.Clamp(value, min, max));
 
-            var control = new SliderControl { Slider = slider, ValueLabel = valueLabel, Format = format, Unit = unit };
+            var control = new SliderControl { Slider = slider, ValueLabel = valueLabel, Format = format, Unit = unit,
+                                              Input = valueInput };
             control.RefreshLabel(slider.value);
+
+            minus.onClick.AddListener(() => control.Nudge(-1));
+            plus.onClick.AddListener(() => control.Nudge(1));
+
+            // Przy edycji sama liczba, bez jednostki — łatwiej ją poprawić albo zastąpić.
+            valueInput.onSelect.AddListener(_ => valueInput.SetTextWithoutNotify(slider.value.ToString(format)));
+            valueInput.onEndEdit.AddListener(control.ApplyTypedValue);
 
             slider.onValueChanged.AddListener(v =>
             {
@@ -480,11 +578,58 @@ namespace SkullXrRendererNKR.UI.Desktop
             return control;
         }
 
-        public static TextMeshProUGUI CreateSectionHeader(Transform parent, string title)
+        /// <summary>
+        /// Nagłówek sekcji. Z podanym help dostaje po prawej przycisk „?” — objaśnienie całej sekcji
+        /// pokazuje się w dymku po najechaniu, zamiast zajmować stałe miejsce w panelu.
+        /// </summary>
+        public static TextMeshProUGUI CreateSectionHeader(Transform parent, string title, string help = null)
         {
-            var header = CreateText(parent, title, 17f, FontStyles.Bold);
-            SetHeight(header.gameObject, 28f);
+            if (string.IsNullOrEmpty(help))
+            {
+                var plain = CreateText(parent, title, 17f, FontStyles.Bold);
+                SetHeight(plain.gameObject, 28f);
+                return plain;
+            }
+
+            var row = CreateRect(parent, "Header_" + title);
+            SetHeight(row.gameObject, 28f);
+
+            var header = CreateText(row, title, 17f, FontStyles.Bold);
+            var headerRect = Stretch((RectTransform)header.transform);
+            headerRect.offsetMax = new Vector2(-30f, 0f);
+
+            var helpButton = CreateButton(row, "?", null, Palette.PanelAlt, 22f);
+            var helpRect = (RectTransform)helpButton.transform;
+            helpRect.anchorMin = new Vector2(1f, 0.5f);
+            helpRect.anchorMax = new Vector2(1f, 0.5f);
+            helpRect.pivot = new Vector2(1f, 0.5f);
+            helpRect.sizeDelta = new Vector2(22f, 22f);
+            helpRect.anchoredPosition = Vector2.zero;
+            helpButton.GetComponentInChildren<TextMeshProUGUI>().fontSize = 13f;
+            AddTooltip(helpButton.gameObject, help);
+            // Kliknięcie pokazuje dymek od razu — na wypadek, gdyby ktoś nie czekał na najechanie.
+            helpButton.onClick.AddListener(() => DesktopTooltip.ShowNow(help));
+
             return header;
+        }
+
+        /// <summary>
+        /// Dymek z objaśnieniem po najechaniu kursorem. Działa na każdym elemencie z grafiką
+        /// przyjmującą promień — także na rodzicu, bo zdarzenia najechania docierają w górę hierarchii.
+        /// </summary>
+        public static T AddTooltip<T>(T component, string text) where T : Component
+        {
+            if (component == null || string.IsNullOrEmpty(text)) return component;
+            var trigger = component.GetComponent<DesktopTooltipTrigger>();
+            if (trigger == null) trigger = component.gameObject.AddComponent<DesktopTooltipTrigger>();
+            trigger.Text = text;
+            return component;
+        }
+
+        public static GameObject AddTooltip(GameObject go, string text)
+        {
+            AddTooltip(go != null ? go.transform : null, text);
+            return go;
         }
 
         /// <summary>Cienka pozioma linia — rozdziela grupy ustawień bez dokładania podpisów.</summary>
@@ -518,10 +663,14 @@ namespace SkullXrRendererNKR.UI.Desktop
         }
 
         /// <summary>Pionowa lista przewijana — zwraca kontener, do którego dodaje się wiersze.</summary>
-        public static RectTransform CreateScrollList(Transform parent, string name, out ScrollRect scrollRect)
+        /// <param name="nested">Lista wewnątrz innej przewijanej listy — kółko myszy na jej krańcach
+        /// przewija rodzica, zamiast utknąć (patrz NestedScrollRect).</param>
+        public static RectTransform CreateScrollList(Transform parent, string name, out ScrollRect scrollRect,
+                                                     bool nested = false)
         {
             var viewport = CreatePanel(parent, name, new Color(0f, 0f, 0f, 0.25f));
-            scrollRect = viewport.gameObject.AddComponent<ScrollRect>();
+            scrollRect = nested ? viewport.gameObject.AddComponent<NestedScrollRect>()
+                                : viewport.gameObject.AddComponent<ScrollRect>();
             viewport.gameObject.AddComponent<RectMask2D>();
 
             var content = CreateRect(viewport.transform, "Content");
@@ -542,6 +691,36 @@ namespace SkullXrRendererNKR.UI.Desktop
             scrollRect.scrollSensitivity = 24f;
 
             return content;
+        }
+    }
+
+    /// <summary>
+    /// Lista przewijana osadzona w innej przewijanej liście. Zwykły ScrollRect połyka kółko myszy
+    /// także wtedy, gdy sam nie ma już dokąd przewinąć — kursor nad listą wysp blokował wtedy
+    /// przewijanie całej zakładki. Na krańcach (albo gdy treść się mieści) przekazuje kółko rodzicowi.
+    /// Tworzony wyłącznie z kodu (CreateScrollList), więc nie potrzebuje własnego pliku.
+    /// </summary>
+    public class NestedScrollRect : ScrollRect
+    {
+        private ScrollRect _parentScroll;
+
+        public override void OnScroll(UnityEngine.EventSystems.PointerEventData data)
+        {
+            if (_parentScroll == null && transform.parent != null)
+                _parentScroll = transform.parent.GetComponentInParent<ScrollRect>();
+
+            var view = viewport != null ? viewport : (RectTransform)transform;
+            bool fits = content == null || content.rect.height <= view.rect.height + 0.5f;
+            float delta = data.scrollDelta.y; // > 0 = w górę
+            bool atTop = verticalNormalizedPosition >= 0.999f;
+            bool atBottom = verticalNormalizedPosition <= 0.001f;
+
+            if (_parentScroll != null && (fits || (delta > 0f && atTop) || (delta < 0f && atBottom)))
+            {
+                _parentScroll.OnScroll(data);
+                return;
+            }
+            base.OnScroll(data);
         }
     }
 }

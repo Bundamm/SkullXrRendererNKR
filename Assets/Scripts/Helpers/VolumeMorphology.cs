@@ -554,7 +554,7 @@ namespace Helpers
             return await UniTask.RunOnThreadPool(() =>
             {
                 var finalSizes = new int[255]; // indeks = finalna etykieta (1..254), 0 = nieużywane
-                if (labelSizes.Count == 0) return ("Brak wysp.", finalSizes);
+                if (labelSizes.Count == 0) return ("No islands found.", finalSizes);
 
                 var sorted = labelSizes.OrderByDescending(kv => kv.Value).ToList();
                 int maxKey = labelSizes.Keys.Max();
@@ -595,11 +595,8 @@ namespace Helpers
                 }
 
                 System.Text.StringBuilder sb = new System.Text.StringBuilder();
-                sb.AppendLine($"Łącznie znaleziono {sorted.Count} wysp. Top 10 największych:");
-                for (int i = 0; i < Mathf.Min(10, sorted.Count); i++)
-                {
-                    sb.AppendLine($"   -> ID {i + 1}: rozmiar {sorted[i].Value} wokseli");
-                }
+                // Pełna lista wysp z objętościami jest w panelu (Visible structure) — tu tylko liczba.
+                sb.AppendLine($"Found {sorted.Count} islands.");
 
                 // Setki/tysiące wysp niemal zawsze oznaczają, że Threshold HU jest ustawiony za nisko
                 // (łapie tkankę miękką zamiast samej kości) — segmentacja staje się szumem, a Pick/
@@ -607,8 +604,8 @@ namespace Helpers
                 // Kość zbita to zwykle 300-800+ HU — tkanka miękka/woda to 0-80 HU.
                 if (overflowIslandCount > 0)
                 {
-                    sb.AppendLine($"UWAGA: {overflowIslandCount} najmniejszych wysp połączono we wspólną etykietę resztkową {OverflowLabel} " +
-                        $"({finalSizes[OverflowLabel]} wokseli łącznie) — zabrakło unikalnych etykiet (limit {OverflowLabel - 1} + jedna resztkowa).");
+                    sb.AppendLine($"Note: the {overflowIslandCount} smallest islands were merged into ID {OverflowLabel} " +
+                        $"({finalSizes[OverflowLabel]} voxels), there are only {OverflowLabel - 1} separate IDs.");
                 }
 
                 if (sorted.Count > 500)

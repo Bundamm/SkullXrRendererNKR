@@ -46,11 +46,7 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _GlobalDensityModifier: 15
-    - _RenderMode: 1
-    - _SurfaceThreshold: 0.224
+    - _SurfaceThreshold: 0.197
     m_Colors:
-    - _AmbientColor: {r: 0.4, g: 0.4, b: 0.4, a: 1}
-    - _EllipsoidRadius: {r: 0.4, g: 0.45, b: 1, a: 0}
-    - _LightDir: {r: 1, g: 0.7, b: 1, a: 0}
+    - _LightDir: {r: 0.69, g: -3.9, b: 1.9, a: 0}
   m_BuildTextureStacks: []

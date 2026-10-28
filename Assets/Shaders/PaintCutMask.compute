@@ -5,7 +5,7 @@
 #pragma kernel CSSyncOwnerFromCpu
 
 // Docelowa maska WŁASNOŚCI (0 = główny wolumen, N = wydzielony obiekt albo kosz nr N), próbkowana
-// bezpośrednio w RaymarchCT / RaymarchCT_Simplified jako _OwnerTex. Zastępuje dawną binarną maskę
+// bezpośrednio w RaymarchCT_Simplified jako _OwnerTex. Zastępuje dawną binarną maskę
 // cięć (_CutsTex) — "wycięcie" to teraz tylko przypisanie własności do KOSZA CIĘTEGO OBIEKTU
 // (VolumeObjectManager.GetOrCreateCutBinFor), nie trwałe kasowanie; ten sam mechanizm co wydzielanie
 // fragmentów jako osobnych obiektów, patrz LoadDicomData.ExtractPickedIslandAsObject.

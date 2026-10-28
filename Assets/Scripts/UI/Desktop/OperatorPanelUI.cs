@@ -80,6 +80,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             session.OnSegmentationSettingsChanged += RefreshSegmentationControls;
             session.OnScanChanged += HandleScanChanged;
             session.OnUndoHistoryChanged += RefreshUndoButton;
+            session.OnInspectReport += HandleInspectReport;
         }
 
         private void OnDisable()
@@ -94,6 +95,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             session.OnSegmentationSettingsChanged -= RefreshSegmentationControls;
             session.OnScanChanged -= HandleScanChanged;
             session.OnUndoHistoryChanged -= RefreshUndoButton;
+            session.OnInspectReport -= HandleInspectReport;
 
             // Menedżer remotingu żyje niezależnie od panelu — bez odpięcia jego zdarzenie sięgałoby
             // po zniszczone już elementy interfejsu.
@@ -113,14 +115,25 @@ namespace SkullXrRendererNKR.UI.Desktop
             HandleScanChanged(session.CurrentScanPath);
             HandleBusyChanged(session.IsBusy);
             RefreshUndoButton();
+            RefreshPickedIsland();
         }
 
         private void Update()
         {
+            // Odczyty bez własnych eventów (FPS, wskazanie Pickerem) — odpytywane, ale tanio:
+            // przerysowanie tekstu następuje tylko przy faktycznej zmianie albo co kilka klatek.
+            UpdateInfoOverlay();
+            PollPickedIsland();
+
             // Ctrl+Z obok przycisku: odruch jest na tyle powszechny, że brak skrótu sam w sobie
             // wygląda na usterkę. Blokujemy w trakcie ciężkiej operacji, tak samo jak resztę panelu.
             var keyboard = Keyboard.current;
             if (keyboard == null || session == null || session.IsBusy) return;
+
+            // Ctrl+Z w polu tekstowym należy do pola (cofnięcie wpisywanego znaku), nie do modelu.
+            var selected = UnityEngine.EventSystems.EventSystem.current != null
+                ? UnityEngine.EventSystems.EventSystem.current.currentSelectedGameObject : null;
+            if (selected != null && selected.GetComponent<TMP_InputField>() != null) return;
 
             bool ctrl = keyboard.leftCtrlKey.isPressed || keyboard.rightCtrlKey.isPressed;
             if (ctrl && keyboard.zKey.wasPressedThisFrame && session.CanUndo)
@@ -137,7 +150,9 @@ namespace SkullXrRendererNKR.UI.Desktop
             // zwłaszcza że część operacji (usuwanie sprzętu skanera) świadomie nie trafia do historii.
             // Bez znaków ozdobnych: fonty użyte w tym projekcie nie mają strzałek w rodzaju ↶ i
             // podmieniają je na pusty prostokąt, ostrzegając o tym przy każdym przerysowaniu.
-            _undoButtonLabel.text = canUndo ? $"Cofnij: {session.NextUndoLabel}" : "Nie ma czego cofnąć";
+            _undoButtonLabel.text = canUndo ? $"Undo: {session.NextUndoLabel}" : "Nothing to undo";
+
+            RefreshUndoHistoryList();
         }
 
         // ------------------------------------------------------------------
@@ -159,7 +174,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             panelRect.sizeDelta = new Vector2(panelWidth, 0f);
             panelRect.anchoredPosition = Vector2.zero;
 
-            var title = DesktopUIFactory.CreateText(panel.transform, "Panel operatora", 20f, FontStyles.Bold);
+            var title = DesktopUIFactory.CreateText(panel.transform, "Operator panel", 20f, FontStyles.Bold);
             var titleRect = (RectTransform)title.transform;
             titleRect.anchorMin = new Vector2(0f, 1f);
             titleRect.anchorMax = new Vector2(1f, 1f);
@@ -206,7 +221,7 @@ namespace SkullXrRendererNKR.UI.Desktop
 
             // Cofanie stoi w pasku stanu, a nie w którejś zakładce — jest potrzebne dokładnie wtedy,
             // gdy coś poszło nie tak, więc nie może wymagać wcześniejszego odgadnięcia, gdzie leży.
-            _undoButton = DesktopUIFactory.CreateButton(statusBar.transform, "Cofnij",
+            _undoButton = DesktopUIFactory.CreateButton(statusBar.transform, "Undo",
                                                         () => session.UndoLastEditAsync().Forget(),
                                                         DesktopUIFactory.Palette.PanelAlt, 26f);
             var undoRect = (RectTransform)_undoButton.transform;
@@ -219,7 +234,7 @@ namespace SkullXrRendererNKR.UI.Desktop
             _undoButtonLabel.fontSize = 12f;
 
             // --- strony ---
-            var tabNames = new[] { "Badanie", "Obraz", "Struktury", "Narzędzia", "Obiekty" };
+            var tabNames = new[] { "Scan", "View", "Structures", "Tools", "Objects" };
             _tabPages.Add(BuildScanPage(pageContent));
             _tabPages.Add(BuildRenderPage(pageContent));
             _tabPages.Add(BuildSegmentationPage(pageContent));
@@ -242,6 +257,9 @@ namespace SkullXrRendererNKR.UI.Desktop
             overlayRect.offsetMin = new Vector2(0f, 36f);
             _busyOverlay.gameObject.SetActive(false);
 
+            // Nakładka PRZED oknem potwierdzenia: późniejsze dziecko Canvasu rysuje się wyżej, a
+            // nakładka nie może przykrywać zasłony modalnej.
+            BuildInfoOverlay();
             BuildConfirmDialog();
 
             ShowTab(0);
@@ -304,8 +322,8 @@ namespace SkullXrRendererNKR.UI.Desktop
             DesktopUIFactory.AddHorizontalLayout(buttons.gameObject, 10f);
             DesktopUIFactory.SetHeight(buttons.gameObject, 40f);
 
-            DesktopUIFactory.CreateButton(buttons, "Anuluj", () => _confirmRoot.SetActive(false));
-            _confirmAccept = DesktopUIFactory.CreateButton(buttons, "Potwierdź", null,
+            DesktopUIFactory.CreateButton(buttons, "Cancel", () => _confirmRoot.SetActive(false));
+            _confirmAccept = DesktopUIFactory.CreateButton(buttons, "Confirm", null,
                                                            DesktopUIFactory.Palette.AccentDanger);
 
             _confirmRoot.SetActive(false);
@@ -336,6 +354,9 @@ namespace SkullXrRendererNKR.UI.Desktop
         private void HandleBusyChanged(bool busy)
         {
             if (_busyOverlay != null) _busyOverlay.gameObject.SetActive(busy);
+            // Segmentacja przelicza etykiety, więc objętość wskazanej struktury mogła się zmienić,
+            // choć samo wskazanie (woksel) zostało to samo.
+            if (!busy) RefreshPickedIsland();
         }
 
         private void HandleStatusChanged(string status)

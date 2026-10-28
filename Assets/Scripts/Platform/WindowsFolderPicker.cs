@@ -37,7 +37,7 @@ namespace SkullXrRendererNKR.Platform
         /// Pokazuje okno wyboru folderu i zwraca wybraną ścieżkę, albo null gdy użytkownik anulował
         /// (lub gdy platforma tego nie wspiera). Nie blokuje wątku Unity.
         /// </summary>
-        public static async UniTask<string> PickFolderAsync(string title = "Wskaż folder z serią DICOM",
+        public static async UniTask<string> PickFolderAsync(string title = "Choose a folder with a DICOM series",
                                                             string initialFolder = null)
         {
             if (!IsSupported)
